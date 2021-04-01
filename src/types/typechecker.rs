@@ -973,7 +973,7 @@ impl<'a> Inferable<'a> for ast::Definition<'a> {
 
         // The rhs of a Definition must be inferred at a greater LetBindingLevel than
         // the lhs below. Here we use level for the rhs and level - 1 for the lhs
-        let (t, traits) = infer(self.expr.as_mut(), cache);
+        let (t, traits) = infer(self.expression.as_mut(), cache);
 
         CURRENT_LEVEL.store(level.0 - 1, Ordering::SeqCst);
 

@@ -1,0 +1,21 @@
+//C stdio
+type File = f: ref unit
+type FilePos = f: ref unit
+
+extern
+    fopen: (ref char) (ref char) -> File
+    fclose: File -> unit
+
+    fputs: (ref char) OutFile -> i32
+    fputc: char OutFile -> i32
+    fgetc: InFile -> char
+    fgets: (ref char) i32 InFile -> ref char
+    ungetc: char InFile -> i32
+
+    fgetpos: File FilePos -> unit
+    ftell: File -> i32
+    fsetpos: File FilePos -> unit
+    fseek: File i32 i32 -> i32
+
+    feof: InFile -> i32
+    ferror: File -> i32

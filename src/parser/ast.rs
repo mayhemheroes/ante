@@ -119,7 +119,7 @@ impl<'a> FunctionCall<'a> {
 #[derive(Debug)]
 pub struct Definition<'a> {
     pub pattern: Box<Ast<'a>>,
-    pub expr: Box<Ast<'a>>,
+    pub expression: Box<Ast<'a>>,
     pub mutable: bool,
     pub location: Location<'a>,
     pub level: Option<LetBindingLevel>,

@@ -1,0 +1,87 @@
+import Vec
+import Unsafe.(unsafe, offset)
+
+// The string type is defined internally within the compiler as:
+// type string = c_string: ref char, len: usz
+
+type SubString = start: ref char, len: usz
+
+// TODO: Currently all string handling is ascii, in
+// the future it will need to be encoded in, and verified
+// as utf-8
+
+reverse (s:string) -> string =
+    buf = mut malloc (s.len + 1usz)
+
+    i = mut 0usz
+    while i < s.len do
+        buf#i := s.cstring#(s.len - i - 1usz)
+        i += 1usz
+
+    buf#i := '\0'
+    string buf i
+
+split (s:string) (c:char) -> Vec SubString =
+    v = mut Vec.empty ()
+
+    i = mut 0
+    j = mut 0
+    while i < s.len do
+        if s.cstring#i == c then
+            push v (substr s j i)
+            j := i + 1
+
+        i += 1
+
+    push v (substr s j i)
+    v
+
+substr (s:string) (begin:usz) (end:usz) -> SubString =
+    if end > s.len or begin >= s.len then
+        return ""
+
+    start = unsafe (offset s.c_string begin)
+    len = end - begin
+    SubString buf len
+
+impl Cast (ref char) string with
+    cast c_string = string c_string (cast (C.strlen c_string))
+
+// Iterating on a string iterates
+// through all of its characters.
+impl Iterable string SubString with
+    next s =
+        if s.len == 0 then None
+        else Some (s.c_string#0, substr s 1 s.len)
+
+impl Eq string
+    (==) l r =
+        if l.len != r.len then
+            return false
+
+        for i in 0 .. l.len do
+            if l.c_string#i != r.c_string#i then
+                return false
+        true
+
+impl Append string with
+    (++) s1 s2 =
+        if s1.len == 0 then return s2
+        if s2.len == 0 then return s1
+
+        len = s1.len + s2.len
+        buf = mut malloc (len + 1)
+
+        memcpy buf (s1.c_string) (s1.len)
+
+        buf_offset = cast (cast buf + s1.len)
+        memcpy buf_offset (s2.c_string) (s2.len + 1) //copy terminating null too
+
+        string buf len
+
+impl Extract string usz char with
+    (#) s index = s.c_string#index
+
+impl Insert string usz char
+    insert str index c =
+        str.c_string#index := c

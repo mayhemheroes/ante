@@ -4,8 +4,6 @@
     Standard functions and datatypes pre-imported
     into every Ante source file.
 */
-
-//C functions
 extern 
     printf: (ref char) ... -> unit
     puts: (ref char) -> i32
@@ -18,36 +16,6 @@ extern
     memcpy: (ref a) (ref b) i32 -> ref a //dest
     system: (ref char) -> i32
     strlen: (ref char) -> i32
-
-//C stdio
-type File = f: ref unit
-type FilePos = f: ref unit
-
-type InFile = f:File
-type OutFile = f:File
-
-extern
-    fopen: (ref char) (ref char) -> File
-    fclose: File -> unit
-
-    fputs: (ref char) OutFile -> i32
-    fputc: i32 OutFile -> i32
-    fgetc: InFile -> i32
-    fgets: (ref char) i32 InFile -> ref char
-    ungetc: i32 InFile -> i32
-
-    fgetpos: File FilePos -> unit
-    ftell: File -> i32
-    fsetpos: File FilePos -> unit
-    fseek: File i32 i32 -> i32
-
-    feof: InFile -> i32
-    ferror: File -> i32
-
-//Convenience function for using fgetc, and feof with better types
-// TODO: builtin casting between primitives
-// fgetchar f = fgetc f as char
-// feofb f = feof f as bool
 
 type Maybe t =
    | Some t
@@ -76,12 +44,6 @@ trait Cast a b with
 
 impl Cast a a with
     cast a = a
-
-impl Cast (ref a) usz with
-    cast (_ptr: ref a) = builtin "CastRefUsz"
-
-impl Cast usz (ref a) with
-    cast (_address: usz) = builtin "CastUszRef"
 
 impl Cast (Maybe m) string given Cast m string with
     cast maybe =
@@ -262,102 +224,15 @@ impl Cast string (ref char) with
 
 
 //For-loops work over any range that is Iterable
-trait Iterable i -> it with
-    into_iter: i -> it
-
-trait Iterator i -> elem with
-    has_next: i -> bool
-    cur_elem: i -> elem
-    advance: i -> i
-
-impl Iterable i i given Iterator i with
-    into_iter i = i
-
-// Iterating through an InFile iterates through each line
-// impl Iterator InFile string
-//     has_next f = not feofb f
-//     cur_elem f = InFile.next_line f
-//     advance f = f
-
-// TODO: manually construct a string from parts
-// impl Cast (ref char) string with
-//     cast c_string = string c_string (cast (strlen c_string))
-
-// impl Eq string
-//     (==) l r =
-//         if l.len != r.len then
-//             return false
+// trait Iterable i -> it elem given Iterator it elem with
+//     into_iter: i -> it
 // 
-//         for i in 0 .. l.len do
-//             if l.c_string#i != r.c_string#i then
-//                 return false
-//         true
+trait Iterator it -> elem with
+    next: it -> Maybe (elem, it)
+// 
+// impl Iterable i i e given Iterator i e with
+//     into_iter i = i
 
-// TODO: manually construct a string from parts
-// impl Append string with
-//     (++) s1 s2 =
-//         if s1.len == 0 then return s2
-//         if s2.len == 0 then return s1
-// 
-//         len = s1.len + s2.len
-//         buf = mut malloc (len + 1)
-// 
-//         memcpy buf (s1.c_string) (s1.len)
-// 
-//         buf_offset = cast (cast buf + s1.len)
-//         memcpy buf_offset (s2.c_string) (s2.len + 1) //copy terminating null too
-// 
-//         string buf len
-
-impl Extract string usz char with
-    (#) s index = s.c_string#index
-
-
-// impl Insert string int char
-//     insert str index char =
-//         str.c_string#index := char
-
-impl Cast string InFile with
-    cast fName = InFile (fopen fName.c_string "r".c_string)
-
-
-impl Cast string OutFile with
-    cast fName = OutFile (fopen fName.c_string "w".c_string)
-
-
-// module InFile
-//     next_line (f:InFile) -> string =
-//         if feofb f then return ""
-//         eof = cast 255
-// 
-//         len = mut 0int
-//         cap = mut 64int
-//         cstr = mut malloc cap
-// 
-//         while
-//             c = fgetchar f
-// 
-//             if c == eof then break
-// 
-//             //Flag feof if eof occurs after terminating newline
-//             if c == '\n' then
-//                 peek = fgetchar f
-//                 if peek != eof then ungetc (cast peek) f
-//                 break
-// 
-//             if len+1int >= cap then
-//                 cap *= 2int
-//                 cstr := realloc cstr cap
-// 
-//             cstr#len := c
-//             len += 1int
-//             true
-//         do ()
-// 
-//         cstr#len := '\0'
-//         string cstr len
-// 
-// 
 // //print a message then return user input
 // input msg -> string =
 //     len = mut 0int

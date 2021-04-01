@@ -1,0 +1,45 @@
+type File = /* opaque */
+    buffer: C.File
+
+open (filename: string) -> File =
+    File (C.fopen filename.c_string "rw".c_string)
+
+at_end file = C.feof file.buffer != 0
+
+eof: char = cast 255
+
+next_line (f: File) -> string =
+    if at_end f then return ""
+
+    len = mut 0
+    cap = mut 32
+    cstr = mut malloc cap
+
+    while
+        c = fgetchar f.buffer
+
+        if c == eof then break
+
+        if c == '\n' then
+            // Flag at_end if eof occurs after terminating newline
+            peek = C.fgetc f.buffer
+            if peek != eof then C.ungetc peek f.buffer
+            break
+
+        if len + 1 >= cap then
+            cap *= 2
+            cstr := realloc cstr cap
+
+        cstr#len := c
+        len += 1
+        true
+    do ()
+
+    cstr#len := '\0'
+    string cstr len
+
+// Iterating through a File iterates through each line
+impl Iterator InFile string
+    next file =
+        if at_end file then None
+        else Some (next_line file, file)

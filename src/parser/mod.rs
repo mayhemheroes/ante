@@ -99,7 +99,7 @@ parser!(function_definition location -> 'b ast::Definition<'b> =
     body !<- block_or_statement;
     ast::Definition {
         pattern: Box::new(name),
-        expr: Box::new(Ast::lambda(args, return_type, body, location)),
+        expression: Box::new(Ast::lambda(args, return_type, body, location)),
         mutable: false,
         location,
         level: None,
@@ -127,7 +127,7 @@ parser!(variable_definition location -> 'b ast::Definition<'b> =
     expr !<- block_or_statement;
     ast::Definition {
         pattern: Box::new(name),
-        expr: Box::new(expr),
+        expression: Box::new(expr),
         mutable: mutable.is_some(),
         location,
         level: None,

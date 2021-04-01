@@ -81,7 +81,7 @@ pub struct Generator<'context> {
 
 /// Codegen the given Ast, producing a binary file at the given path.
 pub fn run<'c>(path: &Path, ast: &Ast<'c>, cache: &mut ModuleCache<'c>, show_ir: bool,
-    run_program: bool, delete_binary: bool, optimization_level: &str)
+    emit_obj: bool, run_program: bool, delete_binary: bool, optimization_level: &str)
 {
     timing::start_time("LLVM codegen");
 
@@ -124,7 +124,7 @@ pub fn run<'c>(path: &Path, ast: &Ast<'c>, cache: &mut ModuleCache<'c>, show_ir:
     let binary_name = module_name_to_program_name(&module_name);
 
     timing::start_time("Linking");
-    codegen.output(module_name, &binary_name, &target_triple, &codegen.module);
+    codegen.output(module_name, &binary_name, &target_triple, &codegen.module, emit_obj);
 
     // --run: compile and run the program
     if run_program {
@@ -217,7 +217,7 @@ impl<'g> Generator<'g> {
     }
 
     /// Output the current module to a file and link with gcc.
-    fn output(&self, module_name: String, binary_name: &str, target_triple: &TargetTriple, module: &Module) {
+    fn output(&self, module_name: String, binary_name: &str, target_triple: &TargetTriple, module: &Module, emit_obj: bool) {
         // generate the bitcode to a .bc file
         let path = Path::new(&module_name).with_extension("o");
         let target = Target::from_triple(&target_triple).unwrap();
@@ -226,19 +226,21 @@ impl<'g> Generator<'g> {
 
         target_machine.write_to_file(&module, FileType::Object, &path).unwrap();
 
-        // call gcc to compile the bitcode to a binary
-        let output = "-o".to_string() + binary_name;
-        let mut child = Command::new("gcc")
-            .arg(path.to_string_lossy().as_ref())
-            .arg("-Wno-everything")
-            .arg("-O0")
-            .arg("-lm")
-            .arg(output)
-            .spawn().unwrap();
+        if !emit_obj {
+            // call gcc to compile the bitcode to a binary
+            let output = "-o".to_string() + binary_name;
+            let mut child = Command::new("gcc")
+                .arg(path.to_string_lossy().as_ref())
+                .arg("-Wno-everything")
+                .arg("-O0")
+                .arg("-lm")
+                .arg(output)
+                .spawn().unwrap();
 
-        // remove the temporary bitcode file
-        child.wait().unwrap();
-        std::fs::remove_file(path).unwrap();
+            // remove the temporary bitcode file
+            child.wait().unwrap();
+            std::fs::remove_file(path).unwrap();
+        }
     }
 
     /// Returns the BasicValueEnum found for a given id, type pair.
@@ -789,14 +791,14 @@ impl<'g> Generator<'g> {
         // If we're defining a lambda, give the lambda info on DefinitionInfoId so that it knows
         // what to name itself in the IR and so recursive functions can properly codegen without
         // attempting to re-compile themselves over and over.
-        match (definition.pattern.as_ref(), definition.expr.as_ref()) {
+        match (definition.pattern.as_ref(), definition.expression.as_ref()) {
             (Ast::Variable(variable), Ast::Lambda(_)) => {
                 self.current_function_info = Some(variable.definition.unwrap());
             }
             _ => (),
         }
 
-        let value = definition.expr.codegen(self, cache);
+        let value = definition.expression.codegen(self, cache);
         self.bind_irrefutable_pattern(definition.pattern.as_ref(), value, cache);
     }
 
@@ -1142,13 +1144,13 @@ impl<'g, 'c> CodeGen<'g, 'c> for ast::FunctionCall<'c> {
 
 impl<'g, 'c> CodeGen<'g, 'c> for ast::Definition<'c> {
     fn codegen(&self, generator: &mut Generator<'g>, cache: &mut ModuleCache<'c>) -> BasicValueEnum<'g> {
-        match self.expr.as_ref() {
+        match self.expression.as_ref() {
             // If the value is a function we can skip it and come back later to only compile it
             // when it is actually used. This saves the optimizer some work since we won't ever
             // have to search for and remove unused functions.
             Ast::Lambda(_) => (),
             _ => {
-                let value = self.expr.codegen(generator, cache);
+                let value = self.expression.codegen(generator, cache);
                 generator.bind_irrefutable_pattern(self.pattern.as_ref(), value, cache);
             },
         }

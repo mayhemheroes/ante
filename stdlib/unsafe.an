@@ -1,0 +1,26 @@
+// TODO: Once opaque types are implemented,
+// Unsafe should be opaque to force access to
+// use the `unsafe` getter function so that all
+// unsafe code is clearly marked.
+type Unsafe a = contents: a
+
+unsafe (u: Unsafe a) -> a = a.contents
+
+to_address (_ptr: ref a) -> Unsafe usz =
+    builtin "CastRefUsz"
+
+to_pointer (_addr: usz) -> Unsafe (ref a) =
+    builtin "CastUszRef"
+
+transmute (x: a) -> Unsafe b =
+    builtin "transmute"
+
+offset (ptr: ref a) (offset: usz) -> Unsafe (ref a) =
+    address = unsafe (to_address ptr) + offset
+    to_pointer address
+
+map (x: Unsafe a) (f: a -> b) -> Unsafe b =
+    Unsafe (f (unsafe x))
+
+bind (x: Unsafe a) (f: a -> Unsafe b) -> Unsafe b =
+    f (unwrap x)

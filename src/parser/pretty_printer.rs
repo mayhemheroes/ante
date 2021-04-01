@@ -61,7 +61,7 @@ impl<'a> Display for ast::FunctionCall<'a> {
 
 impl<'a> Display for ast::Definition<'a> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "({} = {})", self.pattern, self.expr)
+        write!(f, "({} = {})", self.pattern, self.expression)
     }
 }
 

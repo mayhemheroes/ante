@@ -723,7 +723,7 @@ impl<'c> Resolvable<'c> for ast::Definition<'c> {
         resolver.in_mutable_context = false;
         self.level = Some(resolver.let_binding_level);
 
-        self.expr.define(resolver, cache);
+        self.expression.define(resolver, cache);
         resolver.pop_let_binding_level();
     }
 }
@@ -1073,7 +1073,7 @@ impl<'c> Resolvable<'c> for ast::TraitImpl<'c> {
 
         // All the names are present, now define them.
         for definition in self.definitions.iter_mut() {
-            definition.expr.define(resolver, cache);
+            definition.expression.define(resolver, cache);
             definition.level = Some(resolver.let_binding_level);
         }
 
