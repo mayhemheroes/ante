@@ -1152,3 +1152,13 @@ impl<'c> Resolvable<'c> for ast::Assignment<'c> {
         self.rhs.define(resolver, cache);
     }
 }
+
+impl<'c> Resolvable<'c> for ast::LetRegion<'c> {
+    fn declare(&mut self, _resolver: &mut NameResolver, _cache: &mut ModuleCache<'c>) {
+        unreachable!("LetRegion node encountered during name resolution - these shouldn't be created until lifetime inference")
+    }
+
+    fn define(&mut self, resolver: &mut NameResolver, cache: &mut ModuleCache<'c>) {
+        unreachable!("LetRegion node encountered during name resolution - these shouldn't be created until lifetime inference")
+    }
+}

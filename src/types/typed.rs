@@ -48,3 +48,4 @@ impl_typed_for!(Sequence);
 impl_typed_for!(Extern);
 impl_typed_for!(MemberAccess);
 impl_typed_for!(Assignment);
+impl_typed_for!(LetRegion);

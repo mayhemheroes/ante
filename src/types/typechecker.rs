@@ -1206,3 +1206,9 @@ impl<'a> Inferable<'a> for ast::Assignment<'a> {
         (Type::Primitive(PrimitiveType::UnitType), traits)
     }
 }
+
+impl<'a> Inferable<'a> for ast::LetRegion<'a> {
+    fn infer_impl(&mut self, cache: &mut ModuleCache<'a>) -> (Type, TraitConstraints) {
+        unreachable!("LetRegion node encountered during type inference - these shouldn't be created until lifetime inference")
+    }
+}

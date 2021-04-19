@@ -1302,3 +1302,9 @@ impl<'g, 'c> CodeGen<'g, 'c> for ast::Assignment<'c> {
         generator.unit_value()
     }
 }
+
+impl<'g, 'c> CodeGen<'g, 'c> for ast::LetRegion<'c> {
+    fn codegen(&self, generator: &mut Generator<'g>, cache: &mut ModuleCache<'c>) -> BasicValueEnum<'g> {
+        unimplemented!()
+    }
+}

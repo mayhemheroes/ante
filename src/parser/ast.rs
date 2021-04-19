@@ -28,9 +28,34 @@
 use crate::lexer::token::{ Token, IntegerKind };
 use crate::error::location::{ Location, Locatable };
 use crate::cache::{ DefinitionInfoId, TraitInfoId, ModuleId, ImplScopeId, TraitBindingId, VariableId };
+use crate::lifetimes::LifetimeVariableId;
 use crate::types::{ self, TypeInfoId, LetBindingLevel };
 use crate::types::pattern::DecisionTree;
 use crate::util::reinterpret_as_bits;
+
+#[derive(Debug)]
+pub enum Ast<'a> {
+    Literal(Literal<'a>),
+    Variable(Variable<'a>),
+    Lambda(Lambda<'a>),
+    FunctionCall(FunctionCall<'a>),
+    Definition(Definition<'a>),
+    If(If<'a>),
+    Match(Match<'a>),
+    TypeDefinition(TypeDefinition<'a>),
+    TypeAnnotation(TypeAnnotation<'a>),
+    Import(Import<'a>),
+    TraitDefinition(TraitDefinition<'a>),
+    TraitImpl(TraitImpl<'a>),
+    Return(Return<'a>),
+    Sequence(Sequence<'a>),
+    Extern(Extern<'a>),
+    MemberAccess(MemberAccess<'a>),
+    Assignment(Assignment<'a>),
+
+    // These are inserted after lifetime inference
+    LetRegion(LetRegion<'a>),
+}
 
 #[derive(Clone, Debug, Eq, Hash, PartialOrd, Ord)]
 pub enum LiteralKind {
@@ -311,25 +336,15 @@ pub struct Assignment<'a> {
     pub typ: Option<types::Type>,
 }
 
+/// LetRegion nodes don't appear in the source
+/// of the program - they're inserted into the
+/// parse tree after the lifetime analysis pass.
 #[derive(Debug)]
-pub enum Ast<'a> {
-    Literal(Literal<'a>),
-    Variable(Variable<'a>),
-    Lambda(Lambda<'a>),
-    FunctionCall(FunctionCall<'a>),
-    Definition(Definition<'a>),
-    If(If<'a>),
-    Match(Match<'a>),
-    TypeDefinition(TypeDefinition<'a>),
-    TypeAnnotation(TypeAnnotation<'a>),
-    Import(Import<'a>),
-    TraitDefinition(TraitDefinition<'a>),
-    TraitImpl(TraitImpl<'a>),
-    Return(Return<'a>),
-    Sequence(Sequence<'a>),
-    Extern(Extern<'a>),
-    MemberAccess(MemberAccess<'a>),
-    Assignment(Assignment<'a>),
+pub struct LetRegion<'a> {
+    pub region: LifetimeVariableId,
+    pub body: Box<Ast<'a>>,
+    pub location: Location<'a>,
+    pub typ: Option<types::Type>,
 }
 
 impl PartialEq for LiteralKind {
@@ -472,6 +487,7 @@ macro_rules! dispatch_on_expr {
             $crate::parser::ast::Ast::Extern(inner) =>          $function(inner $(, $($args),* )? ),
             $crate::parser::ast::Ast::MemberAccess(inner) =>    $function(inner $(, $($args),* )? ),
             $crate::parser::ast::Ast::Assignment(inner) =>      $function(inner $(, $($args),* )? ),
+            $crate::parser::ast::Ast::LetRegion(inner) =>       $function(inner $(, $($args),* )? ),
         }
     });
 }
@@ -507,3 +523,4 @@ impl_locatable_for!(Sequence);
 impl_locatable_for!(Extern);
 impl_locatable_for!(MemberAccess);
 impl_locatable_for!(Assignment);
+impl_locatable_for!(LetRegion);

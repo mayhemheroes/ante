@@ -278,3 +278,9 @@ impl<'ast> InferableLifetime for ast::Assignment<'ast> {
         self.rhs.infer_lifetime(analyzer, cache);
     }
 }
+
+impl<'ast> InferableLifetime for ast::LetRegion<'ast> {
+    fn infer_lifetime<'c>(&mut self, analyzer: &mut LifetimeAnalyzer, cache: &mut ModuleCache<'c>) {
+        unreachable!("LetRegion nodes should only be inserted after lifetime inference is complete")
+    }
+}

@@ -236,3 +236,9 @@ impl<'a> Display for ast::Assignment<'a> {
         write!(f, "({} := {})", self.lhs, self.rhs)
     }
 }
+
+impl<'a> Display for ast::LetRegion<'a> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "(letregion {} in {})", self.region.0, self.body)
+    }
+}
