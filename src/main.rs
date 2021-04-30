@@ -25,6 +25,7 @@ mod cache;
 mod nameresolution;
 mod types;
 mod lifetimes;
+mod refine;
 mod llvm;
 
 use lexer::Lexer;

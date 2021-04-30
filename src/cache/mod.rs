@@ -441,4 +441,13 @@ impl<'a> ModuleCache<'a> {
         self.variable_nodes.push(name.to_string());
         id
     }
+
+    pub fn find_binding(&self, id: TypeVariableId) -> Option<&Type> {
+        match &self.type_bindings[id.0] {
+            TypeBinding::Bound(Type::TypeVariable(id2)) => self.find_binding(*id2),
+            TypeBinding::Bound(Type::Ref(id2)) => self.find_binding(*id2),
+            TypeBinding::Bound(t) => Some(t),
+            TypeBinding::Unbound(..) => None,
+        }
+    }
 }

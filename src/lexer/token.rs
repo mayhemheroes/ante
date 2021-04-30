@@ -9,6 +9,7 @@
 //! an abstract syntax tree.
 use std::fmt::{ self, Display };
 use crate::types::TypeVariableId;
+use crate::cache::ModuleCache;
 
 /// Lexing can fail with these errors, though the Lexer just
 /// returns the LexerError inside of an Invalid token which
@@ -47,6 +48,26 @@ pub enum IntegerKind {
 
     I8, I16, I32, I64, Isz,
     U8, U16, U32, U64, Usz,
+}
+
+impl IntegerKind {
+    pub fn is_signed<'c>(&self, cache: &ModuleCache<'c>) -> bool {
+        use IntegerKind::*;
+        use crate::types::{ Type, PrimitiveType };
+
+        match self {
+            Unknown => panic!("Tried to find signedness of a polymorphic integer before type inference"),
+            Inferred(id) => {
+                match cache.find_binding(*id) {
+                    Some(Type::Primitive(PrimitiveType::IntegerType(kind))) => kind.is_signed(cache),
+                    None => panic!("Tried to find signedness of a polymorphic integer before type inference"),
+                    _ => unreachable!("Integer bound to non-integer type"),
+                }
+            },
+            I8 | I16 | I32 | I64 | Isz => true,
+            U8 | U16 | U32 | U64 | Usz => false,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
