@@ -21,6 +21,7 @@ use crate::types::traits::{ RequiredImpl, RequiredTrait };
 use crate::error::location::{ Location, Locatable };
 use crate::parser::ast::{ Ast, Definition, TraitDefinition, TraitImpl, TypeAnnotation };
 use crate::cache::unsafecache::UnsafeCache;
+use crate::util::fmap;
 
 use std::path::{ Path, PathBuf };
 use std::collections::HashMap;
@@ -442,12 +443,48 @@ impl<'a> ModuleCache<'a> {
         id
     }
 
+    /// Search for a binding to the given type variable recursively
+    /// until a concrete type or Unbound type variable is found and return that
     pub fn find_binding(&self, id: TypeVariableId) -> Option<&Type> {
         match &self.type_bindings[id.0] {
             TypeBinding::Bound(Type::TypeVariable(id2)) => self.find_binding(*id2),
             TypeBinding::Bound(Type::Ref(id2)) => self.find_binding(*id2),
             TypeBinding::Bound(t) => Some(t),
             TypeBinding::Unbound(..) => None,
+        }
+    }
+
+    /// Replace all bound type variables within the given Type with
+    /// whatever they're bound to. This won't affect any unbound
+    /// type variables.
+    pub fn follow_bindings<'c>(&self, typ: &Type) -> Type {
+        use Type::*;
+        match typ {
+            Primitive(primitive) => Primitive(*primitive),
+
+            Function(arg_types, return_type, varargs) => {
+                let args = fmap(arg_types, |typ| self.follow_bindings(typ));
+                let return_type = self.follow_bindings(return_type);
+                Function(args, Box::new(return_type), *varargs)
+            },
+
+            TypeVariable(id) => {
+                self.find_binding(*id).map(|typ| self.follow_bindings(typ))
+                    .unwrap_or(TypeVariable(*id))
+            },
+
+            UserDefinedType(id) => UserDefinedType(*id),
+
+            TypeApplication(typ, args) => {
+                let typ = self.follow_bindings(typ);
+                let args = fmap(args, |arg| self.follow_bindings(arg));
+                TypeApplication(Box::new(typ), args)
+            },
+
+            Ref(lifetime) => Ref(*lifetime),
+
+            // unwrap foralls
+            ForAll(_, typ) => self.follow_bindings(typ),
         }
     }
 }

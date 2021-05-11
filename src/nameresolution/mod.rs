@@ -678,6 +678,11 @@ impl<'c> Resolvable<'c> for ast::Lambda<'c> {
     fn define(&mut self, resolver: &mut NameResolver, cache: &mut ModuleCache<'c>) {
         resolver.push_scope(cache);
         resolver.resolve_all_definitions(self.args.iter_mut(), cache, || DefinitionKind::Parameter);
+
+        if let Some(given) = self.given.as_mut() {
+            given.define(resolver, cache);
+        }
+
         self.body.define(resolver, cache);
         resolver.pop_scope(cache, true);
     }
@@ -765,7 +770,7 @@ impl<'c> Resolvable<'c> for ast::Match<'c> {
 
 /// Given "type T a b c = ..." return
 /// forall a b c. args -> T a b c
-fn create_variant_constructor_type<'c>(parent_type_id: TypeInfoId, args: Vec<Type>, cache: &ModuleCache<'c>) -> Type {
+pub fn create_variant_constructor_type<'c>(parent_type_id: TypeInfoId, args: Vec<Type>, cache: &ModuleCache<'c>) -> Type {
     let info = &cache.type_infos[parent_type_id.0];
     let mut result = Type::UserDefinedType(parent_type_id);
 
@@ -855,14 +860,14 @@ impl<'c> Resolvable<'c> for ast::TypeDefinition<'c> {
                 let fields = create_fields(vec, resolver, cache);
                 let field_types = fmap(&fields, |field| field.field_type.clone());
 
-                let type_info = &mut cache.type_infos[type_id.0];
-                type_info.body = TypeInfoBody::Struct(fields);
-
                 // Create the constructor for this type.
                 // This is done inside create_variants for tagged union types
                 let id = resolver.push_definition(&self.name, false, cache, self.location);
                 cache.definition_infos[id.0].typ = Some(create_variant_constructor_type(type_id, field_types, cache));
                 cache.definition_infos[id.0].definition = Some(DefinitionKind::TypeConstructor { name: self.name.clone(), tag: None });
+
+                let type_info = &mut cache.type_infos[type_id.0];
+                type_info.body = TypeInfoBody::Struct(fields, id);
             },
             ast::TypeDefinitionBody::AliasOf(typ) => {
                 let typ = resolver.convert_type(cache, typ);

@@ -919,6 +919,11 @@ impl<'a> Inferable<'a> for ast::Lambda<'a> {
             bind_irrefutable_pattern(arg, arg_type, &vec![], false, cache);
         }
 
+        if let Some(given) = self.given.as_mut() {
+            let (given_clause_type, _) = infer(given.as_mut(), cache);
+            unify(&&given_clause_type, &Primitive(PrimitiveType::BooleanType), given.locate(), cache);
+        }
+
         let (return_type, traits) = infer(self.body.as_mut(), cache);
         (Function(arg_types, Box::new(return_type), false), traits)
     }

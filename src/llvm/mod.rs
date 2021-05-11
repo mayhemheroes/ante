@@ -310,7 +310,7 @@ impl<'g> Generator<'g> {
     fn codegen_definition<'c>(&mut self, id: DefinitionInfoId, typ: &types::Type, cache: &mut ModuleCache<'c>) -> BasicValueEnum<'g> {
         match self.lookup(id, typ, cache) {
             Some(value) => value,
-            None => self.monomorphise(id, typ, cache).unwrap()
+            None => self.monomorphise(id, typ, cache)
         }
     }
 
@@ -327,14 +327,14 @@ impl<'g> Generator<'g> {
     /// Monomorphise and compile the Definition for a given DefinitionInfoId.
     /// This pushes the monomorphisation bindings to the context then simply
     /// recurses into the definition node, popping the bindings when finished.
-    fn monomorphise<'c>(&mut self, id: DefinitionInfoId, typ: &types::Type, cache: &mut ModuleCache<'c>) -> Option<BasicValueEnum<'g>> {
-        let definition = &mut cache.definition_infos[id.0];
-        let definition = trustme::extend_lifetime(definition);
-        let definition_type = remove_forall(definition.typ.as_ref().unwrap());
+    fn monomorphise<'c>(&mut self, id: DefinitionInfoId, typ: &types::Type, cache: &mut ModuleCache<'c>) -> BasicValueEnum<'g> {
+        let definition_info = &mut cache.definition_infos[id.0];
+        let definition_info = trustme::extend_lifetime(definition_info);
+        let definition_type = remove_forall(definition_info.typ.as_ref().unwrap());
 
         let typ = self.follow_bindings(typ, cache);
 
-        let bindings = typechecker::try_unify(&typ, definition_type, definition.location, cache)
+        let bindings = typechecker::try_unify(&typ, definition_type, definition_info.location, cache)
             .map_err(|error| eprintln!("{}", error))
             .expect("Unification error during monomorphisation");
 
@@ -342,30 +342,34 @@ impl<'g> Generator<'g> {
 
         // Compile the definition with the bindings in scope. Each definition is expected to
         // add itself to Generator.definitions
-        let value = match &definition.definition {
+        let value = match &definition_info.definition {
             Some(DefinitionKind::Definition(definition)) => {
                 self.codegen_monomorphise(*definition, cache);
-                self.lookup(id, &typ, cache)
+                match self.lookup(id, &typ, cache) {
+                    Some(value) => value,
+                    None => unreachable!("No definition found for {} : {} after compiling {}",
+                        definition_info.name, typ.display(cache), definition),
+                }
             }
             Some(DefinitionKind::Extern(_)) => {
-                Some(self.codegen_extern(id, &typ, cache))
+                self.codegen_extern(id, &typ, cache)
             }
             Some(DefinitionKind::TypeConstructor { name, tag }) => {
-                Some(self.codegen_type_constructor(name, tag, &typ, cache))
+                self.codegen_type_constructor(name, tag, &typ, cache)
             },
             Some(DefinitionKind::TraitDefinition(_)) => {
                 unreachable!("There is no code in a trait definition that can be codegen'd.\n\
-                             No cached impl for {}: {}", definition.name, typ.display(cache))
+                    No cached impl for {}: {}", definition_info.name, typ.display(cache))
             },
             Some(DefinitionKind::Parameter) => {
                 unreachable!("There is no code to (lazily) codegen for parameters.\n\
-                             Encountered while compiling {}: {}", definition.name, typ.display(cache))
+                    Encountered while compiling {}: {}", definition_info.name, typ.display(cache))
             },
             Some(DefinitionKind::MatchPattern) => {
                 unreachable!("There is no code to (lazily) codegen for match patterns.\n
-                             Encountered while compiling {}: {}", definition.name, typ.display(cache))
+                    Encountered while compiling {}: {}", definition_info.name, typ.display(cache))
             },
-            None => unreachable!("No definition for {}", definition.name),
+            None => unreachable!("No definition for {}", definition_info.name),
         };
 
         self.monomorphisation_bindings.pop();
@@ -418,12 +422,12 @@ impl<'g> Generator<'g> {
 
     fn size_of_user_defined_type<'c>(&mut self, id: TypeInfoId, args: &[types::Type], cache: &ModuleCache<'c>) -> usize {
         let info = &cache.type_infos[id.0];
-        assert!(info.args.len() == args.len(), "Kind error during llvm code generation");
+        assert_eq!(info.args.len(), args.len(), "Kind error during llvm code generation");
 
         use types::TypeInfoBody::*;
         match &info.body {
             Union(variants) => self.size_of_union_type(info, variants, args, cache),
-            Struct(fields) => self.size_of_struct_type(info, fields, args, cache),
+            Struct(fields, _) => self.size_of_struct_type(info, fields, args, cache),
 
             // Aliases should be desugared prior to codegen
             Alias(_) => unreachable!(),
@@ -526,7 +530,7 @@ impl<'g> Generator<'g> {
 
     fn convert_user_defined_type<'c>(&mut self, id: TypeInfoId, args: Vec<types::Type>, cache: &ModuleCache<'c>) -> BasicTypeEnum<'g> {
         let info = &cache.type_infos[id.0];
-        assert!(info.args.len() == args.len(), "Kind error during llvm code generation");
+        assert_eq!(info.args.len(), args.len(), "Kind error during llvm code generation");
 
         if let Some(typ) = self.types.get(&(id, args.clone())) {
             return *typ;
@@ -535,7 +539,7 @@ impl<'g> Generator<'g> {
         use types::TypeInfoBody::*;
         let typ = match &info.body {
             Union(variants) => self.convert_union_type(id, info, variants, args, cache),
-            Struct(fields) => self.convert_struct_type(id, info, fields, args, cache),
+            Struct(fields, _) => self.convert_struct_type(id, info, fields, args, cache),
 
             // Aliases should be desugared prior to codegen
             Alias(_) => unreachable!(),
@@ -572,7 +576,7 @@ impl<'g> Generator<'g> {
 
                 match &typ {
                     Ref(_) => {
-                        assert!(args.len() == 1);
+                        assert_eq!(args.len(), 1);
                         self.convert_type(&args[0], cache).ptr_type(AddressSpace::Generic).into()
                     },
                     UserDefinedType(id) => self.convert_user_defined_type(*id, args, cache),
@@ -698,6 +702,10 @@ impl<'g> Generator<'g> {
         string_type.const_named_struct(&[cast.into(), length.into()]).into()
     }
 
+    /// Follow all the type variables contained within this type, returning a new Type
+    /// with those variables replaced with what they're bound to.
+    /// Compared with ModuleCache::follow_bindings, this also uses any type bindings
+    /// contained within our monomorphisation_bindings map.
     fn follow_bindings<'c>(&self, typ: &types::Type, cache: &ModuleCache<'c>) -> types::Type {
         use types::Type::*;
         match typ {
@@ -741,7 +749,7 @@ impl<'g> Generator<'g> {
         use { ast::LiteralKind, Ast::* };
         match ast {
             Literal(literal) => {
-                assert!(literal.kind == LiteralKind::Unit)
+                assert_eq!(literal.kind, LiteralKind::Unit)
                 // pass, we don't need to actually do any assignment when ignoring unit values
             },
             Variable(variable) => {

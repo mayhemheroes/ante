@@ -92,6 +92,7 @@ pub fn main() {
         .arg(Arg::with_name("delete-binary").long("delete-binary").help("Delete the resulting binary after compiling"))
         .arg(Arg::with_name("show-time").long("show-time").help("Print out the time each compiler pass takes for the given program"))
         .arg(Arg::with_name("show-types").long("show-types").help("Print out the type of each definition"))
+        .arg(Arg::with_name("show-refinements").long("show-refinements").help("Print out the refinement type constraints collected from the source program"))
         .arg(Arg::with_name("show-lifetimes").long("show-lifetimes").help("Print out the input file annotated with inferred lifetimes of heap allocations"))
         .arg(Arg::with_name("file").help("The file to compile").required(true))
         .get_matches();
@@ -141,11 +142,11 @@ pub fn main() {
         print_definition_types(&cache);
     }
 
-    if args.is_present("check") {
-        return;
-    }
+    // Phase 5: Refinement type inference
+    util::timing::start_time("Refinement Type Inference");
+    refine::refine(ast, args.is_present("show-refinements"), &cache);
 
-    // Phase 5: Lifetime inference
+    // Phase 6: Lifetime inference
     util::timing::start_time("Lifetime Inference");
     lifetimes::infer(ast, &mut cache);
 
@@ -153,7 +154,11 @@ pub fn main() {
         println!("{}", ast);
     }
 
-    // Phase 6: Codegen
+    if args.is_present("check") {
+        return;
+    }
+
+    // Phase 7: Codegen
     if error::get_error_count() == 0 {
         llvm::run(&filename, ast, &mut cache,
                 args.is_present("emit-llvm"),

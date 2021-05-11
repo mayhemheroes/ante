@@ -60,7 +60,7 @@ impl IntegerKind {
             Inferred(id) => {
                 match cache.find_binding(*id) {
                     Some(Type::Primitive(PrimitiveType::IntegerType(kind))) => kind.is_signed(cache),
-                    None => panic!("Tried to find signedness of a polymorphic integer before type inference"),
+                    None => true, // default to i32
                     _ => unreachable!("Integer bound to non-integer type"),
                 }
             },

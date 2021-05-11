@@ -91,6 +91,7 @@ pub struct Lambda<'a> {
     pub args: Vec<Ast<'a>>,
     pub body: Box<Ast<'a>>,
     pub return_type: Option<Type<'a>>,
+    pub given: Option<Box<Ast<'a>>>,
     pub location: Location<'a>,
     pub typ: Option<types::Type>,
 }
@@ -386,9 +387,9 @@ impl<'a> Ast<'a> {
         Ast::Variable(Variable { kind: VariableKind::TypeConstructor(name), location, definition: None, trait_binding: None, id: None, impl_scope: None, typ: None })
     }
 
-    pub fn lambda(args: Vec<Ast<'a>>, return_type: Option<Type<'a>>, body: Ast<'a>, location: Location<'a>) -> Ast<'a> {
+    pub fn lambda(args: Vec<Ast<'a>>, return_type: Option<Type<'a>>, body: Ast<'a>, given: Option<Ast<'a>>, location: Location<'a>) -> Ast<'a> {
         assert!(!args.is_empty());
-        Ast::Lambda(Lambda { args, body: Box::new(body), return_type, location, typ: None })
+        Ast::Lambda(Lambda { args, body: Box::new(body), return_type, location, given: given.map(Box::new), typ: None })
     }
 
     pub fn function_call(function: Ast<'a>, args: Vec<Ast<'a>>, location: Location<'a>) -> Ast<'a> {

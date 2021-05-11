@@ -78,6 +78,7 @@ fn statement<'a, 'b>(input: Input<'a, 'b>) -> AstResult<'a, 'b> {
         Token::Impl => trait_impl(input),
         Token::Return => return_expr(input),
         Token::Extern => parse_extern(input),
+        Token::Given => definition(input),
         _ => expression(input),
     }
 }
@@ -92,6 +93,7 @@ fn raw_definition<'a, 'b>(input: Input<'a, 'b>) -> ParseResult<'a, 'b, ast::Defi
 }
 
 parser!(function_definition location -> 'b ast::Definition<'b> =
+    given <- maybe(refinements);
     name <- irrefutable_pattern_argument;
     args <- many1(irrefutable_pattern_argument);
     return_type <- maybe(function_return_type);
@@ -99,13 +101,20 @@ parser!(function_definition location -> 'b ast::Definition<'b> =
     body !<- block_or_statement;
     ast::Definition {
         pattern: Box::new(name),
-        expr: Box::new(Ast::lambda(args, return_type, body, location)),
+        expr: Box::new(Ast::lambda(args, return_type, body, given, location)),
         mutable: false,
         location,
         level: None,
         info: None,
         typ: None,
     }
+);
+
+parser!(refinements location =
+    _ <- expect(Token::Given);
+    expr <- expression;
+    _ <- maybe_newline;
+    expr
 );
 
 parser!(varargs location -> 'b () =
@@ -620,7 +629,7 @@ parser!(lambda loc =
     return_type <- maybe(function_return_type);
     _ !<- expect(Token::RightArrow);
     body !<- block_or_statement;
-    Ast::lambda(args, return_type, body, loc)
+    Ast::lambda(args, return_type, body, None, loc)
 );
 
 parser!(operator loc =

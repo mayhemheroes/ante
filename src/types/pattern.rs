@@ -342,7 +342,7 @@ fn get_missing_cases<'c, T>(variants: &BTreeMap<&VariantTag, T>, cache: &ModuleC
 
                 // Structs only have one constructor anyway, so if
                 // we have a constructor its always exhaustive.
-                TypeInfoBody::Struct(_) => BTreeSet::new(),
+                TypeInfoBody::Struct(_, _) => BTreeSet::new(),
                 TypeInfoBody::Alias(_) => unimplemented!("Pattern matching on aliased types is unimplemented"),
                 TypeInfoBody::Unknown => unreachable!("Cannot pattern match on unknown type constructor"),
             }
@@ -719,7 +719,7 @@ impl DecisionTreeResult {
 
 /// `ast::Match` nodes are compiled to DecisionTrees during type inference so that
 /// exhaustiveness and redundancy checking may occur. Additionally, codegen uses
-/// the resulting tree to efficiently compile pattern matching with the guarentee
+/// the resulting tree to efficiently compile pattern matching with the guarantee
 /// that no constructor is ever checked twice.
 pub enum DecisionTree {
     /// Success! run the code at the given branch index in the `ast::Match::branches`

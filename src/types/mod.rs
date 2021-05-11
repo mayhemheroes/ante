@@ -190,7 +190,7 @@ pub const PAIR_TYPE: TypeInfoId = TypeInfoId(1);
 #[derive(Debug)]
 pub enum TypeInfoBody<'a> {
     Union(Vec<TypeConstructor<'a>>),
-    Struct(Vec<Field<'a>>),
+    Struct(Vec<Field<'a>>, DefinitionInfoId),
     Alias(Type),
     Unknown,
 }
@@ -221,7 +221,7 @@ impl<'a> TypeInfo<'a> {
 
     pub fn find_field<'b>(&'b self, field_name: &str) -> Option<(u32, &'b Field)> {
         match &self.body {
-            TypeInfoBody::Struct(fields) => {
+            TypeInfoBody::Struct(fields, _) => {
                 fields.iter().enumerate()
                     .find(|(_, field)| field.name == field_name)
                     .map(|(i, field)| (i as u32, field))

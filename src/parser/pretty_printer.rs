@@ -49,6 +49,9 @@ impl<'a> Display for ast::Lambda<'a> {
         if let Some(typ) = &self.return_type {
             write!(f, " -> {}", typ)?;
         }
+        if let Some(given) = self.given.as_ref() {
+            write!(f, " given {}", given)?;
+        }
         write!(f, " . {})", self.body)
     }
 }
