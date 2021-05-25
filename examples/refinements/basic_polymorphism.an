@@ -1,0 +1,15 @@
+given a < b
+min a b = a
+
+min 3 4
+
+four = 4
+min four 3
+
+// args: --check
+// expected stderr:
+// examples/refinements/basic_polymorphism.an: 7,1:	error: Failed to prove `four < 3` with four = 4
+// min four 3
+// 
+// examples/refinements/basic_polymorphism.an: 1,1:	note: Assertion arises from condition here
+// given a < b

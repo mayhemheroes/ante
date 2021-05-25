@@ -49,3 +49,31 @@ pub fn reinterpret_from_bits(x: u64) -> f64 {
 pub fn join_with<T: Display>(vec: &[T], delimiter: &str) -> String {
     fmap(&vec, |t| format!("{}", t)).join(delimiter)
 }
+
+/// Indent each line of the given string by `spaces_count` spaces
+pub fn indent(s: &str, spaces_count: usize, indent_first_line: bool) -> String {
+    let mut ret = String::new();
+    let mut lines = s.lines();
+    let indent = " ".repeat(spaces_count);
+
+    if let Some(first) = lines.next() {
+        if indent_first_line {
+            ret += &indent;
+        }
+        ret += first;
+        ret += "\n";
+    }
+
+    for line in lines {
+        ret += &indent;
+        ret += line;
+        ret += "\n";
+    }
+
+    // remove extra newline at the end
+    if !ret.is_empty() {
+        ret.pop();
+    }
+
+    ret
+}

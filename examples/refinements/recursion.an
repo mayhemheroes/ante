@@ -1,0 +1,18 @@
+
+given b
+assert b = true
+
+checkme (i: i32) end n =
+    if i < end then
+        assert (i < n)
+        checkme (i + 1) end n
+
+checkme 0 3 7
+
+// should fail, 10 < 5 can't be proven
+checkme 0 10 5
+
+// args: --check
+// expected stderr:
+// examples/refinements/recursion.an: 13,1:	error: Failed to prove ...
+// checkme 0 10 5

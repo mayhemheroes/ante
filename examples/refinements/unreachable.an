@@ -1,0 +1,10 @@
+
+given false
+unreachable () = ()
+
+match Some 3 with
+| Some n -> ()
+| None -> unreachable ()
+
+// args: --check
+// no errors expected

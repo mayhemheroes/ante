@@ -1,0 +1,7 @@
+
+given b
+assert b = ()
+
+match Some 3 with
+| Some n -> ()
+| _ -> assert false

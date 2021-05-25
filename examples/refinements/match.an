@@ -1,0 +1,18 @@
+
+given a < b
+min (a: i32) b = a
+
+
+m = 5
+
+match Some m with
+| Some n -> min n 2
+| None -> 0
+
+// args: --check
+// expected stderr:
+// examples/refinements/match.an: 9,13	error: Failed to prove `Some 5 == Some n => n < 2` with n = 5
+// | Some n -> min n 2
+// 
+// examples/refinements/match.an: 2,1	note: Refinement arises from condition here
+// given a < b

@@ -425,7 +425,7 @@ pub fn try_unify_with_bindings<'b>(t1: &Type, t2: &Type, bindings: &mut TypeBind
                 if !(*a_is_varargs && b_args.len() >= a_args.len()) &&
                    !(*b_is_varargs && a_args.len() >= b_args.len()) {
 
-                    return Err(make_error!(location, "Function types differ in argument count: {} ({} arg(s)) and {} ({} arg(s))",
+                    return Err(make_error!(location, "Function types differ in argument count: {} and {}, ({} arg(s) vs {} arg(s))",
                         t1.display(cache), t2.display(cache), a_args.len(), b_args.len()));
                 }
             }
@@ -691,7 +691,10 @@ fn bind_irrefutable_pattern<'a>(ast: &mut ast::Ast<'a>, typ: &Type,
     match ast {
         Literal(literal) => {
             match literal.kind {
-                LiteralKind::Unit => unify(typ, &Type::Primitive(PrimitiveType::UnitType), ast.locate(), cache),
+                LiteralKind::Unit => {
+                    literal.typ = Some(Type::Primitive(PrimitiveType::UnitType));
+                    unify(typ, &Type::Primitive(PrimitiveType::UnitType), ast.locate(), cache)
+                },
                 _ => error!(ast.locate(), "Pattern is not irrefutable"),
             }
         },
@@ -921,7 +924,7 @@ impl<'a> Inferable<'a> for ast::Lambda<'a> {
 
         if let Some(given) = self.given.as_mut() {
             let (given_clause_type, _) = infer(given.as_mut(), cache);
-            unify(&&given_clause_type, &Primitive(PrimitiveType::BooleanType), given.locate(), cache);
+            unify(&given_clause_type, &Primitive(PrimitiveType::BooleanType), given.locate(), cache);
         }
 
         let (return_type, traits) = infer(self.body.as_mut(), cache);

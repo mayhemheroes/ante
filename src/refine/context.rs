@@ -3,15 +3,15 @@ use crate::types::{ self, Type, PrimitiveType, TypeInfoId, TypeInfoBody, TypeCon
 use crate::error::location::Location;
 use crate::parser::ast;
 use crate::refine::Refineable;
-use crate::refine::refinements::Refinements;
-use crate::util::fmap;
+use crate::refine::refinements::{ Refinements, RefinementValue };
+use crate::util::{ fmap, indent };
 
 use std::collections::HashMap;
 
 use z3::ast::{ Ast, Bool, Int, Float, String };
 
 pub struct RefinementContext<'z3, 'c> {
-    z3_context: &'z3 z3::Context,
+    pub z3_context: &'z3 z3::Context,
     pub solver: z3::Solver<'z3>,
     pub definitions: HashMap<DefinitionInfoId, Refinements<'z3, 'c>>,
     pub types: HashMap<Type, z3::Sort<'z3>>,
@@ -31,12 +31,8 @@ impl<'z3, 'c> RefinementContext<'z3, 'c> {
         }
     }
 
-    pub fn value<Ast: Into<Z3Ast<'z3>>>(ast: Ast) -> Refinements<'z3, 'c> {
-         Refinements::new(ast.into())
-    }
-
     pub fn bool_value(&self, value: bool) -> Refinements<'z3, 'c> {
-        Self::value(Bool::from_bool(self.z3_context, value))
+        Refinements::from_value(Bool::from_bool(self.z3_context, value).into())
     }
 
     pub fn integer_value(&self, value: u64, signed: bool) -> Refinements<'z3, 'c> {
@@ -45,19 +41,44 @@ impl<'z3, 'c> RefinementContext<'z3, 'c> {
         } else {
             Int::from_u64(self.z3_context, value)
         };
-        Self::value(value)
+        Refinements::from_value(value.into())
     }
 
     pub fn float_value(&self, value: f64) -> Refinements<'z3, 'c> {
-        Self::value(Float::from_f64(self.z3_context, value))
+        Refinements::from_value(Float::from_f64(self.z3_context, value).into())
     }
 
     pub fn string_value(&self, value: &str) -> Refinements<'z3, 'c> {
-        Self::value(String::from_str(self.z3_context, value).unwrap())
+        Refinements::from_value(String::from_str(self.z3_context, value).unwrap().into())
+    }
+
+    pub fn unrepresentable(&mut self, typ: &Type, cache: &ModuleCache<'c>) -> Refinements<'z3, 'c> {
+        Refinements::from_value(self.hidden_variable("unrepresentable", typ, cache))
+    }
+
+    pub fn unrepresentable_value(&mut self, typ: &Type, cache: &ModuleCache<'c>) -> RefinementValue<'z3> {
+        RefinementValue::Pure(self.hidden_variable("unrepresentable", typ, cache))
     }
 
     pub fn variable(&self, name: &str, sort: z3::Sort<'z3>) -> Z3Ast<'z3> {
         z3::FuncDecl::new(self.z3_context, name, &[], &sort).apply(&[])
+    }
+
+    /// Create a fresh variable that is hidden from the user when outputting
+    /// z3's model. In ante this is used to stand in for impure values or values
+    /// of types that z3 can't represent like first-class functions.
+    pub fn hidden_variable(&mut self, prefix: &str, typ: &Type, cache: &ModuleCache<'c>) -> Z3Ast<'z3> {
+        let sort = self.type_to_sort(typ, cache);
+        match sort.kind() {
+            z3::SortKind::Int => Z3Int::fresh_const(self.z3_context, prefix).into(),
+            z3::SortKind::Bool => Z3Bool::fresh_const(self.z3_context, prefix).into(),
+            z3::SortKind::FloatingPoint => z3::ast::Float::fresh_const_double(self.z3_context, prefix).into(),
+            _ => z3::ast::Datatype::fresh_const(self.z3_context, prefix, &sort).into(),
+        }
+    }
+
+    fn add_definition(&mut self, id: DefinitionInfoId, refinements: Refinements<'z3, 'c>) {
+        self.definitions.entry(id).or_insert(refinements);
     }
 
     pub fn type_to_sort(&mut self, typ: &Type, cache: &ModuleCache<'c>) -> z3::Sort<'z3> {
@@ -114,6 +135,12 @@ impl<'z3, 'c> RefinementContext<'z3, 'c> {
             return sort.clone();
         }
 
+        // Make sure to convert the args and return_type to sorts anyway,
+        // this has the side effect of creating the constructors in z3 for
+        // sum types which other refinements rely upon.
+        args.iter().for_each(|arg| { self.type_to_sort(arg, cache); });
+        self.type_to_sort(&return_type, cache);
+
         let name = typ.display(cache).to_string();
         let sort = z3::Sort::uninterpreted(self.z3_context, z3::Symbol::String(name));
         let typ = Type::Function(args, Box::new(return_type), varargs);
@@ -162,6 +189,7 @@ impl<'z3, 'c> RefinementContext<'z3, 'c> {
             TypeInfoBody::Struct(fields, id) => {
                 let mut field_accessors = vec![];
                 let mut field_vars = vec![];
+                let name = format!("{}${}", name, id.0);
 
                 for field in fields {
                     let sort = self.type_to_sort(&field.field_type, cache);
@@ -174,8 +202,8 @@ impl<'z3, 'c> RefinementContext<'z3, 'c> {
                     .variant(&name, field_accessors)
                     .finish();
 
-                let constructor = Refinements::function(datatype.variants[0].constructor.clone(), field_vars);
-                self.definitions.insert(*id, constructor);
+                let constructor = Self::get_constructor_value(&datatype.variants[0].constructor, field_vars);
+                self.add_definition(*id, constructor);
                 datatype.sort
             },
             TypeInfoBody::Alias(typ) => self.type_to_sort(typ, cache),
@@ -206,17 +234,25 @@ impl<'z3, 'c> RefinementContext<'z3, 'c> {
                 (name, z3::DatatypeAccessor::Sort(sort))
             }).collect();
 
-            let name = format!("{}${}", typename, variant.name);
+            let name = format!("{}${}${}", typename, variant.name, variant.id.0);
             builder = builder.variant(&name, fields);
             ids_and_fields.push((variant.id, field_vars));
         }
 
         let datatype = builder.finish();
         for (variant, (constructor_id, field_vars)) in datatype.variants.iter().zip(ids_and_fields) {
-            let constructor = Refinements::function(variant.constructor.clone(), field_vars);
-            self.definitions.insert(constructor_id, constructor);
+            let constructor = Self::get_constructor_value(&variant.constructor, field_vars);
+            self.add_definition(constructor_id, constructor);
         }
         datatype.sort
+    }
+
+    fn get_constructor_value(constructor: &z3::FuncDecl<'z3>, parameters: Vec<Z3Ast<'z3>>) -> Refinements<'z3, 'c> {
+        if constructor.arity() == 0 {
+            Refinements::from_value(constructor.apply(&[]))
+        } else {
+            Refinements::function(constructor.clone(), parameters)
+        }
     }
 
     pub fn refine_pattern(&mut self, ast: &ast::Ast<'c>, cache: &ModuleCache<'c>) -> (Refinements<'z3, 'c>, Vec<DefinitionInfoId>) {
@@ -235,36 +271,42 @@ impl<'z3, 'c> RefinementContext<'z3, 'c> {
                 let sort = self.type_to_sort(variable.typ.as_ref().unwrap(), cache);
                 let name = variable.to_string();
                 let var = self.variable(&format!("{}${}", name, id.0), sort);
-                let refinements = Refinements::new(var);
-                self.definitions.insert(id, refinements.clone());
+                let refinements = Refinements::from_value(var);
+                self.add_definition(id, refinements.clone());
                 (refinements, vec![id])
             },
             TypeAnnotation(annotation) => {
                 self.refine_pattern(annotation.lhs.as_ref(), cache)
             },
             FunctionCall(call) => {
-                let f = call.function.refine(self, cache);
-                match f.get_func_decl() {
-                    Some((decl, _)) => {
-                        let mut refinements = Refinements::none();
-                        let mut args = vec![];
-                        let mut ids = vec![];
+                let mut asserts = vec![];
+                let mut bindings = vec![];
+                let mut args = vec![];
+                let mut ids = vec![];
 
-                        for arg in call.args.iter() {
-                            let (arg_refinements, mut arg_ids) = self.refine_pattern(arg, cache);
-                            args.push(arg_refinements.get_value().unwrap());
-                            ids.append(&mut arg_ids);
-                            refinements = refinements.combine(arg_refinements);
-                        }
-
-                        let arg_refs: Vec<_> = args.iter().collect();
-                        let callval = decl.apply(&arg_refs);
-                        (refinements.set_return(callval), ids)
-                    }
-                    None => { // TODO
-                        (Refinements::none(), vec![])
-                    }
+                for arg in call.args.iter() {
+                    let (mut arg_refinements, mut arg_ids) = self.refine_pattern(arg, cache);
+                    args.push(arg_refinements.get_value().unwrap());
+                    ids.append(&mut arg_ids);
+                    asserts.append(&mut arg_refinements.asserts);
+                    bindings.append(&mut arg_refinements.bindings);
                 }
+
+                let mut f = call.function.refine(self, cache);
+                asserts.append(&mut f.asserts);
+                bindings.append(&mut f.bindings);
+
+                let value = match f.value {
+                    RefinementValue::Function(f) => {
+                        let arg_refs: Vec<_> = args.iter().collect();
+                        RefinementValue::Pure(f.0.apply(&arg_refs))
+                    }
+                    _ => {
+                        let value = self.hidden_variable("call", call.typ.as_ref().unwrap(), cache);
+                        RefinementValue::Pure(value)
+                    }
+                };
+                (Refinements::new(value, asserts, bindings), ids)
             },
             _ => {
                 unreachable!("Found invalid expr in pattern: {}", ast);
@@ -287,26 +329,25 @@ impl<'z3, 'c> RefinementContext<'z3, 'c> {
         // Add the definition to our known definitions before we actually compile
         // the DefinitionKind below, otherwise we would recurse forever if the
         // definition references itself.
-        let sort = self.type_to_sort(info.typ.as_ref().unwrap(), cache);
+        let sort = self.type_to_sort(&typ, cache);
         let variable = self.variable(&format!("{}${}", info.name, id.0), sort);
-        let refinements = Refinements::new(variable.clone());
-        self.definitions.insert(id, refinements.clone());
+        let refinements = Refinements::from_value(variable.clone());
+        self.add_definition(id, refinements.clone());
 
-        let definition_refinements = match &info.definition {
-            Some(DefinitionKind::Definition(definition)) => definition.refine(self, cache),
+        let refinements = match &info.definition {
+            Some(DefinitionKind::Definition(definition)) => {
+                definition.refine(self, cache).set_return(variable)
+            },
             Some(DefinitionKind::TypeConstructor { .. }) => {
-                self.type_to_sort(info.typ.as_ref().unwrap(), cache);
                 self.definitions.get(&id).cloned().unwrap()
             },
-            Some(DefinitionKind::Extern(_)) => Refinements::Impure,
-            Some(DefinitionKind::TraitDefinition(_)) => Refinements::none(),
-            Some(DefinitionKind::Parameter) => Refinements::none(),
-            Some(DefinitionKind::MatchPattern) => Refinements::none(),
+            Some(DefinitionKind::Extern(_)) => Refinements::impure(),
+            Some(DefinitionKind::TraitDefinition(_)) => refinements,
+            Some(DefinitionKind::Parameter) => refinements,
+            Some(DefinitionKind::MatchPattern) => refinements,
             None => unreachable!("No definition for {}", info.name),
         };
 
-        let refinements = definition_refinements.set_return(variable);
-        self.definitions.insert(id, refinements.clone());
         refinements
     }
 
@@ -314,45 +355,41 @@ impl<'z3, 'c> RefinementContext<'z3, 'c> {
         given_clause: Option<Refinements<'z3, 'c>>,
         body: Refinements<'z3, 'c>, location: Location<'c>) -> Refinements<'z3, 'c>
     {
-        let body_value = body.get_value();
-        match (body_value, body) {
-            (_, Refinements::Impure) => Refinements::Impure,
-            (Some(body_value), Refinements::Pure { asserts, .. }) => {
+        match &body.value {
+            RefinementValue::Impure => body,
+            RefinementValue::Pure(body_value) => {
                 let range = body_value.get_sort();
 
-                let mut body = Refinements::with_asserts(asserts);
-                let mut domain = vec![];
-                let mut param_values = vec![];
-                for parameter in parameters {
-                    let value = parameter.get_value().unwrap();
-                    domain.push(value.get_sort());
-                    param_values.push(value);
+                let (param_values, domain) : (Vec<_>, Vec<_>) =
+                    parameters.iter().map(|param| {
+                        let value = param.get_value().unwrap();
+                        let sort = value.get_sort();
+                        (value, sort)
+                    }).unzip();
 
-                    if let Refinements::Pure { asserts, .. } = parameter {
-                        body = body.add_asserts(asserts);
-                    }
-                }
+                let params = Refinements::combine_all(parameters.into_iter());
 
                 let param_refs: Vec<_> = param_values.iter().collect();
                 let domain_refs: Vec<_> = domain.iter().collect();
 
                 let decl = z3::FuncDecl::new_recursive(self.z3_context, name, &domain_refs, &range);
-                decl.set_body(&param_refs, &body_value);
+                decl.set_body(&param_refs, body_value);
 
                 Refinements::function(decl, param_values)
+                    .combine(params)
                     .combine(body)
                     .try_add_assert(given_clause, location)
             }
-            (None, refinements) => refinements,
+            _ => body,
         }
     }
 
     pub fn bind(&mut self, definitions: &[DefinitionInfoId], pattern: Refinements<'z3, 'c>, value: Refinements<'z3, 'c>) {
-        let binding = pattern.bind_to(&self.solver, value);
+        let binding = pattern.bind_to(value);
 
         for definition in definitions {
             self.definitions.entry(*definition).and_modify(|entry| {
-                *entry = binding.clone().combine(entry.clone())
+                *entry = binding.clone().combine(entry.clone());
             });
         }
     }
@@ -411,5 +448,17 @@ impl<'z3, 'c> RefinementContext<'z3, 'c> {
         let f = z3::FuncDecl::new_recursive(self.z3_context, name, &[&arg_sort, &arg_sort], &ret_sort);
         f.set_body(&[&a, &b], &body.into());
         return Some(Refinements::function(f, vec![a, b]));
+    }
+
+    pub fn output_refinements(&self, cache: &ModuleCache<'c>) {
+        for (id, refinements) in self.definitions.iter() {
+            let info = &cache.definition_infos[id.0];
+
+            // Don't print any names from the prelude
+            if info.location.filename != cache.prelude_path {
+                let refinements = indent(&refinements.to_string(), 4, false);
+                println!("{} = {}", info.name, refinements);
+            }
+        }
     }
 }

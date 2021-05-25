@@ -1,0 +1,16 @@
+given a < b
+assert1 (a: i32) (b: i32) = 0
+
+myfn (foo: i32) =
+    bar = foo - 2
+    assert1 foo bar
+
+myfn 12
+
+// args: --check
+// expected stderr:
+// examples/refinements/function.an: 8,1	error: Failed to prove `12 < 12 - 2`
+// myfn 12
+// 
+// examples/refinements/function.an: 1,1	note: Refinement arises from condition here
+// given a < b
