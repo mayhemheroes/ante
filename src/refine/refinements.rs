@@ -1,30 +1,29 @@
-use crate::refine::context::{ Z3Ast, Z3Bool };
+use crate::refine::z3;
 use crate::util::{ fmap, join_with };
 use crate::error::location::Location;
 use std::rc::Rc;
-use z3::ast::Ast;
 
 /// Each assert is a boolean z3 expression along with (in order)
 /// the callsite it was instantiated at and the origin of the
 /// refinement. The later is usually the function or type definition
 /// where the refinement was declared.
-type Asserts<'z3, 'c> = Vec<(Z3Bool<'z3>, Location<'c>, Location<'c>)>;
+type Asserts<'c> = Vec<(z3::Ast, Location<'c>, Location<'c>)>;
 
-type Bindings<'z3> = Vec<Z3Bool<'z3>>;
+type Bindings = Vec<z3::Ast>;
 
 #[derive(Clone)]
-pub struct Refinements<'z3, 'c> {
-    pub value: RefinementValue<'z3>,
-    pub asserts: Asserts<'z3, 'c>,
-    pub bindings: Bindings<'z3>,
+pub struct Refinements<'c> {
+    pub value: RefinementValue,
+    pub asserts: Asserts<'c>,
+    pub bindings: Bindings,
 }
 
-impl<'z3, 'c> Refinements<'z3, 'c> {
-    pub fn unit(context: &'z3 z3::Context) -> Self {
+impl<'c> Refinements<'c> {
+    pub fn unit(context: z3::Context) -> Self {
         Refinements::from_value(Self::unit_value(context))
     }
 
-    pub fn from_value(value: Z3Ast<'z3>) -> Self {
+    pub fn from_value(value: z3::Ast) -> Self {
         Refinements {
             value: RefinementValue::Pure(value),
             asserts: vec![],
@@ -32,11 +31,11 @@ impl<'z3, 'c> Refinements<'z3, 'c> {
         }
     }
 
-    pub fn new(value: RefinementValue<'z3>, asserts: Asserts<'z3, 'c>, bindings: Bindings<'z3>) -> Self {
+    pub fn new(value: RefinementValue, asserts: Asserts<'c>, bindings: Bindings) -> Self {
         Refinements { value, asserts, bindings }
     }
 
-    pub fn function(value: z3::FuncDecl<'z3>, params: Vec<Z3Ast<'z3>>) -> Self {
+    pub fn function(value: z3::FuncDecl, params: Vec<z3::Ast>) -> Self {
         Refinements {
             value: RefinementValue::Function(Rc::new((value, params))),
             asserts: vec![],
@@ -48,8 +47,8 @@ impl<'z3, 'c> Refinements<'z3, 'c> {
         Self::new(RefinementValue::Impure, vec![], vec![])
     }
 
-    fn unit_value(context: &'z3 z3::Context) -> z3::ast::Dynamic<'z3> {
-        z3::ast::Bool::fresh_const(context, "unit").into()
+    fn unit_value(context: z3::Context) -> z3::Ast {
+        context.fresh_bool()
     }
 
     pub fn combine(self, other: Self) -> Self {
@@ -70,7 +69,7 @@ impl<'z3, 'c> Refinements<'z3, 'c> {
     /// and bindings from each then applying the given function
     /// to the result and the value of the other RefinementValue.
     pub fn combine_with<F>(mut self, mut other: Self, f: F) -> Self
-        where F: FnOnce(Self, RefinementValue<'z3>) -> Self
+        where F: FnOnce(Self, RefinementValue) -> Self
     {
         self.asserts.append(&mut other.asserts);
         self.bindings.append(&mut other.bindings);
@@ -82,27 +81,27 @@ impl<'z3, 'c> Refinements<'z3, 'c> {
         f(self, other.value)
     }
 
-    pub fn get_func_decl(&self) -> Option<&(z3::FuncDecl<'z3>, Vec<Z3Ast<'z3>>)> {
+    pub fn get_func_decl(&self) -> Option<&(z3::FuncDecl, Vec<z3::Ast>)> {
         match &self.value {
             RefinementValue::Function(f) => Some(f.as_ref()),
             _ => None,
         }
     }
 
-    pub fn get_value(&self) -> Option<Z3Ast<'z3>> {
+    pub fn get_value(&self) -> Option<z3::Ast> {
         match &self.value {
             RefinementValue::Pure(x) => Some(x.clone()),
             _ => None,
         }
     }
 
-    pub fn set_return(mut self, ret: Z3Ast<'z3>) -> Self {
+    pub fn set_return(mut self, ret: z3::Ast) -> Self {
         self.value = RefinementValue::Pure(ret);
         self
     }
 
     pub fn map<F>(self, f: F) -> Self
-        where F: FnOnce(Z3Ast<'z3>, Asserts<'z3, 'c>) -> Self
+        where F: FnOnce(z3::Ast, Asserts<'c>) -> Self
     {
         match self.value {
             RefinementValue::Pure(value) => f(value, self.asserts),
@@ -111,7 +110,7 @@ impl<'z3, 'c> Refinements<'z3, 'c> {
     }
 
     pub fn map_value<F>(mut self, f: F) -> Self
-        where F: FnOnce(Z3Ast<'z3>) -> Z3Ast<'z3>
+        where F: FnOnce(z3::Ast) -> z3::Ast
     {
         if let RefinementValue::Pure(value) = self.value {
             self.value = RefinementValue::Pure(f(value));
@@ -135,7 +134,7 @@ impl<'z3, 'c> Refinements<'z3, 'c> {
 
     /// Map all the asserts in other, returning a new Vec of
     /// asserts in the form (=> self.value other.assert)
-    pub fn implies(&self, other: Self) -> (Asserts<'z3, 'c>, Bindings<'z3>) {
+    pub fn implies(&self, other: Self) -> (Asserts<'c>, Bindings) {
         match &self.value {
             RefinementValue::Pure(value) => {
                 let cond = value.as_bool().unwrap();
@@ -158,7 +157,7 @@ impl<'z3, 'c> Refinements<'z3, 'c> {
         self
     }
 
-    pub fn substitute(mut self, replacements: Vec<(&Z3Ast<'z3>, Self)>, callsite: Location<'c>) -> Self {
+    pub fn substitute(mut self, replacements: Vec<(&z3::Ast, Self)>, callsite: Location<'c>) -> Self {
         let mut all_asserts = vec![];
         let mut all_bindings = vec![];
         let mut substitutions = vec![];
@@ -184,7 +183,7 @@ impl<'z3, 'c> Refinements<'z3, 'c> {
     }
 }
 
-impl<'z3, 'c> std::fmt::Display for Refinements<'z3, 'c> {
+impl<'c> std::fmt::Display for Refinements<'c> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "Value: {}", self.value)?;
         let asserts = self.asserts.iter().map(|assert| &assert.0).collect::<Vec<_>>();
@@ -210,13 +209,13 @@ impl<'z3, 'c> std::fmt::Display for Refinements<'z3, 'c> {
 }
 
 #[derive(Clone)]
-pub enum RefinementValue<'z3> {
-    Function(Rc<(z3::FuncDecl<'z3>, Vec<Z3Ast<'z3>>)>),
-    Pure(Z3Ast<'z3>),
+pub enum RefinementValue {
+    Function(Rc<(z3::FuncDecl, Vec<z3::Ast>)>),
+    Pure(z3::Ast),
     Impure,
 }
 
-impl<'z3> RefinementValue<'z3> {
+impl RefinementValue {
     pub fn is_impure(&self) -> bool {
         match self {
             RefinementValue::Impure => true,
@@ -224,7 +223,7 @@ impl<'z3> RefinementValue<'z3> {
         }
     }
 
-    pub fn substitute(self, replacements: &[(&Z3Ast<'z3>, &Z3Ast<'z3>)]) -> RefinementValue<'z3> {
+    pub fn substitute(self, replacements: &[(&z3::Ast, &z3::Ast)]) -> RefinementValue {
         use RefinementValue::*;
         match self {
             Pure(ast) => Pure(ast.substitute(replacements)),
@@ -238,7 +237,7 @@ impl<'z3> RefinementValue<'z3> {
     }
 }
 
-impl<'z3> std::fmt::Display for RefinementValue<'z3> {
+impl std::fmt::Display for RefinementValue {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             RefinementValue::Pure(ast) => write!(f, "{}", ast),

@@ -1,13 +1,13 @@
-use z3::Model;
 use crate::cache::{ ModuleCache, DefinitionInfoId };
 use crate::refine::context::RefinementContext;
 use crate::error::location::Location;
 use crate::util::fmap;
+use crate::refine::z3;
 use std::collections::BTreeSet;
 
-impl<'z3, 'c> RefinementContext<'z3, 'c> {
-    pub fn issue_refinement_error(&mut self, assert: &z3::ast::Bool<'z3>,
-        model: Option<Model<'z3>>, cache: &ModuleCache<'c>,
+impl<'c> RefinementContext<'c> {
+    pub fn issue_refinement_error(&mut self, assert: z3::Ast,
+        model: z3::Model, cache: &ModuleCache<'c>,
         assert_location: Location<'c>, origin: Location<'c>)
     {
         // Write the assert to a sexpr string, parse the string, then pretty-print it into
@@ -30,7 +30,7 @@ impl<'z3, 'c> RefinementContext<'z3, 'c> {
         note!(origin, "Refinement arises from condition here");
     }
 
-    fn get_z3_definition(&mut self, id: DefinitionInfoId, model: &Option<Model<'z3>>, cache: &ModuleCache<'c>) -> Option<String> {
+    fn get_z3_definition(&mut self, id: DefinitionInfoId, model: &z3::Model, cache: &ModuleCache<'c>) -> Option<String> {
         let info = &cache.definition_infos[id.0];
         let name = format!("{}${}", info.name, id.0);
         let typ = cache.follow_bindings(info.typ.as_ref().unwrap());
@@ -43,7 +43,7 @@ impl<'z3, 'c> RefinementContext<'z3, 'c> {
 
         let sort = self.type_to_sort(&typ, cache);
         let var = self.variable(&name, sort);
-        model.as_ref()?.eval(&var)
+        model.eval(&var)
             .map(|value| format!("{} = {}", info.name, z3_expr_to_string(&value, cache)))
     }
 }
@@ -62,7 +62,7 @@ fn is_function(typ: &crate::types::Type) -> bool {
     }
 }
 
-fn z3_expr_to_string<'z3, 'c>(expr: &z3::ast::Dynamic<'z3>, cache: &ModuleCache<'c>) -> String {
+fn z3_expr_to_string<'c>(expr: z3::Ast, cache: &ModuleCache<'c>) -> String {
     let (sexpr, _, _) = parse_sexpr(&expr.to_string()).unwrap();
     sexpr_to_string(&sexpr, cache)
 }

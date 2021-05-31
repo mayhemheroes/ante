@@ -5,15 +5,13 @@ use crate::util::{ fmap, reinterpret_from_bits };
 mod context;
 mod refinements;
 mod model_parser;
+mod z3;
 
 use crate::refine::context::RefinementContext;
 use crate::refine::refinements::{ Refinements, RefinementValue };
 
-use z3::ast::Ast;
-
 pub fn refine<'c>(ast: &ast::Ast<'c>, output_refinements: bool, cache: &ModuleCache<'c>) {
-    let z3_context = z3::Context::new(&z3::Config::new());
-    let mut context = RefinementContext::new(&z3_context);
+    let mut context = RefinementContext::new();
     let refinements = ast.refine(&mut context, cache);
 
     if output_refinements {
@@ -30,8 +28,8 @@ pub fn refine<'c>(ast: &ast::Ast<'c>, output_refinements: bool, cache: &ModuleCa
         context.solver.push();
         context.solver.assert(&assert.0.not());
         match context.solver.check() {
-            z3::SatResult::Sat => {
-                context.issue_refinement_error(&assert.0, context.solver.get_model(), cache, assert.1, assert.2);
+            z3::SatResult::Sat(model) => {
+                context.issue_refinement_error(&assert.0, model, cache, assert.1, assert.2);
             },
             z3::SatResult::Unsat => {},
             z3::SatResult::Unknown => {
@@ -42,18 +40,18 @@ pub fn refine<'c>(ast: &ast::Ast<'c>, output_refinements: bool, cache: &ModuleCa
     }
 }
 
-pub trait Refineable<'z3, 'c> {
-    fn refine(&self, context: &mut RefinementContext<'z3, 'c>, cache: &ModuleCache<'c>) -> Refinements<'z3, 'c>;
+pub trait Refineable<'c> {
+    fn refine(&self, context: &mut RefinementContext<'c>, cache: &ModuleCache<'c>) -> Refinements<'c>;
 }
 
-impl<'z3, 'c> Refineable<'z3, 'c> for ast::Ast<'c> {
-    fn refine(&self, context: &mut RefinementContext<'z3, 'c>, cache: &ModuleCache<'c>) -> Refinements<'z3, 'c> {
+impl<'c> Refineable<'c> for ast::Ast<'c> {
+    fn refine(&self, context: &mut RefinementContext<'c>, cache: &ModuleCache<'c>) -> Refinements<'c> {
         dispatch_on_expr!(self, Refineable::refine, context, cache)
     }
 }
 
-impl<'z3, 'c> Refineable<'z3, 'c> for ast::Literal<'c> {
-    fn refine(&self, context: &mut RefinementContext<'z3, 'c>, cache: &ModuleCache<'c>) -> Refinements<'z3, 'c> {
+impl<'c> Refineable<'c> for ast::Literal<'c> {
+    fn refine(&self, context: &mut RefinementContext<'c>, cache: &ModuleCache<'c>) -> Refinements<'c> {
         use crate::parser::ast::LiteralKind;
         match &self.kind {
             LiteralKind::Char(_) => context.unrepresentable(self.typ.as_ref().unwrap(), cache),
@@ -66,8 +64,8 @@ impl<'z3, 'c> Refineable<'z3, 'c> for ast::Literal<'c> {
     }
 }
 
-impl<'z3, 'c> Refineable<'z3, 'c> for ast::Variable<'c> {
-    fn refine(&self, context: &mut RefinementContext<'z3, 'c>, cache: &ModuleCache<'c>) -> Refinements<'z3, 'c> {
+impl<'c> Refineable<'c> for ast::Variable<'c> {
+    fn refine(&self, context: &mut RefinementContext<'c>, cache: &ModuleCache<'c>) -> Refinements<'c> {
         let definition_id = self.definition.unwrap();
 
         match context.definitions.get(&definition_id) {
@@ -77,9 +75,9 @@ impl<'z3, 'c> Refineable<'z3, 'c> for ast::Variable<'c> {
     }
 }
 
-fn refine_lambda<'z3, 'c>(lambda: &ast::Lambda<'c>, name: &str,
-    context: &mut RefinementContext<'z3, 'c>,
-    cache: &ModuleCache<'c>) -> Refinements<'z3, 'c>
+fn refine_lambda<'c>(lambda: &ast::Lambda<'c>, name: &str,
+    context: &mut RefinementContext<'c>,
+    cache: &ModuleCache<'c>) -> Refinements<'c>
 {
     let parameters = fmap(&lambda.args, |parameter| {
         context.refine_pattern(parameter, cache).0
@@ -93,15 +91,15 @@ fn refine_lambda<'z3, 'c>(lambda: &ast::Lambda<'c>, name: &str,
     context.define_function(name, parameters, asserts, refinements, lambda.location)
 }
 
-impl<'z3, 'c> Refineable<'z3, 'c> for ast::Lambda<'c> {
-    fn refine(&self, context: &mut RefinementContext<'z3, 'c>, cache: &ModuleCache<'c>) -> Refinements<'z3, 'c> {
+impl<'c> Refineable<'c> for ast::Lambda<'c> {
+    fn refine(&self, context: &mut RefinementContext<'c>, cache: &ModuleCache<'c>) -> Refinements<'c> {
         let name = format!("lambda@{:?}:{}:{}", self.location.filename, self.location.start.line, self.location.start.column);
         refine_lambda(self, &name, context, cache)
     }
 }
 
-impl<'z3, 'c> Refineable<'z3, 'c> for ast::FunctionCall<'c> {
-    fn refine(&self, context: &mut RefinementContext<'z3, 'c>, cache: &ModuleCache<'c>) -> Refinements<'z3, 'c> {
+impl<'c> Refineable<'c> for ast::FunctionCall<'c> {
+    fn refine(&self, context: &mut RefinementContext<'c>, cache: &ModuleCache<'c>) -> Refinements<'c> {
         let f = self.function.refine(context, cache);
         let args = fmap(&self.args, |arg| arg.refine(context, cache));
 
@@ -122,8 +120,8 @@ impl<'z3, 'c> Refineable<'z3, 'c> for ast::FunctionCall<'c> {
     }
 }
 
-impl<'z3, 'c> Refineable<'z3, 'c> for ast::Definition<'c> {
-    fn refine(&self, context: &mut RefinementContext<'z3, 'c>, cache: &ModuleCache<'c>) -> Refinements<'z3, 'c> {
+impl<'c> Refineable<'c> for ast::Definition<'c> {
+    fn refine(&self, context: &mut RefinementContext<'c>, cache: &ModuleCache<'c>) -> Refinements<'c> {
         let (lhs, ids) = context.refine_pattern(self.pattern.as_ref(), cache);
 
         let rhs = match self.expr.as_ref() {
@@ -141,8 +139,8 @@ impl<'z3, 'c> Refineable<'z3, 'c> for ast::Definition<'c> {
     }
 }
 
-impl<'z3, 'c> Refineable<'z3, 'c> for ast::If<'c> {
-    fn refine(&self, context: &mut RefinementContext<'z3, 'c>, cache: &ModuleCache<'c>) -> Refinements<'z3, 'c> {
+impl<'c> Refineable<'c> for ast::If<'c> {
+    fn refine(&self, context: &mut RefinementContext<'c>, cache: &ModuleCache<'c>) -> Refinements<'c> {
         let cond = self.condition.refine(context, cache);
         let then = self.then.refine(context, cache);
 
@@ -163,8 +161,8 @@ impl<'z3, 'c> Refineable<'z3, 'c> for ast::If<'c> {
     }
 }
 
-impl<'z3, 'c> Refineable<'z3, 'c> for ast::Match<'c> {
-    fn refine(&self, context: &mut RefinementContext<'z3, 'c>, cache: &ModuleCache<'c>) -> Refinements<'z3, 'c> {
+impl<'c> Refineable<'c> for ast::Match<'c> {
+    fn refine(&self, context: &mut RefinementContext<'c>, cache: &ModuleCache<'c>) -> Refinements<'c> {
         let mut asserts = vec![];
         let mut bindings = vec![];
         let match_expr = self.expression.refine(context, cache);
@@ -206,32 +204,32 @@ impl<'z3, 'c> Refineable<'z3, 'c> for ast::Match<'c> {
     }
 }
 
-impl<'z3, 'c> Refineable<'z3, 'c> for ast::TypeDefinition<'c> {
-    fn refine(&self, context: &mut RefinementContext<'z3, 'c>, cache: &ModuleCache<'c>) -> Refinements<'z3, 'c> {
+impl<'c> Refineable<'c> for ast::TypeDefinition<'c> {
+    fn refine(&self, context: &mut RefinementContext<'c>, cache: &ModuleCache<'c>) -> Refinements<'c> {
         context.unrepresentable(self.typ.as_ref().unwrap(), cache)
     }
 }
 
-impl<'z3, 'c> Refineable<'z3, 'c> for ast::TypeAnnotation<'c> {
-    fn refine(&self, context: &mut RefinementContext<'z3, 'c>, cache: &ModuleCache<'c>) -> Refinements<'z3, 'c> {
+impl<'c> Refineable<'c> for ast::TypeAnnotation<'c> {
+    fn refine(&self, context: &mut RefinementContext<'c>, cache: &ModuleCache<'c>) -> Refinements<'c> {
         self.lhs.refine(context, cache)
     }
 }
 
-impl<'z3, 'c> Refineable<'z3, 'c> for ast::Import<'c> {
-    fn refine(&self, context: &mut RefinementContext<'z3, 'c>, cache: &ModuleCache<'c>) -> Refinements<'z3, 'c> {
+impl<'c> Refineable<'c> for ast::Import<'c> {
+    fn refine(&self, context: &mut RefinementContext<'c>, cache: &ModuleCache<'c>) -> Refinements<'c> {
         context.unrepresentable(self.typ.as_ref().unwrap(), cache)
     }
 }
 
-impl<'z3, 'c> Refineable<'z3, 'c> for ast::TraitDefinition<'c> {
-    fn refine(&self, context: &mut RefinementContext<'z3, 'c>, cache: &ModuleCache<'c>) -> Refinements<'z3, 'c> {
+impl<'c> Refineable<'c> for ast::TraitDefinition<'c> {
+    fn refine(&self, context: &mut RefinementContext<'c>, cache: &ModuleCache<'c>) -> Refinements<'c> {
         context.unrepresentable(self.typ.as_ref().unwrap(), cache)
     }
 }
 
-impl<'z3, 'c> Refineable<'z3, 'c> for ast::TraitImpl<'c> {
-    fn refine(&self, context: &mut RefinementContext<'z3, 'c>, cache: &ModuleCache<'c>) -> Refinements<'z3, 'c> {
+impl<'c> Refineable<'c> for ast::TraitImpl<'c> {
+    fn refine(&self, context: &mut RefinementContext<'c>, cache: &ModuleCache<'c>) -> Refinements<'c> {
         for definition in self.definitions.iter() {
             // TODO: verify any assertions, check that nothing should bubble up
             definition.refine(context, cache);
@@ -241,15 +239,15 @@ impl<'z3, 'c> Refineable<'z3, 'c> for ast::TraitImpl<'c> {
     }
 }
 
-impl<'z3, 'c> Refineable<'z3, 'c> for ast::Return<'c> {
-    fn refine(&self, context: &mut RefinementContext<'z3, 'c>, cache: &ModuleCache<'c>) -> Refinements<'z3, 'c> {
+impl<'c> Refineable<'c> for ast::Return<'c> {
+    fn refine(&self, context: &mut RefinementContext<'c>, cache: &ModuleCache<'c>) -> Refinements<'c> {
         // TODO: Handle early returns
         self.expression.refine(context, cache)
     }
 }
 
-impl<'z3, 'c> Refineable<'z3, 'c> for ast::Sequence<'c> {
-    fn refine(&self, context: &mut RefinementContext<'z3, 'c>, cache: &ModuleCache<'c>) -> Refinements<'z3, 'c> {
+impl<'c> Refineable<'c> for ast::Sequence<'c> {
+    fn refine(&self, context: &mut RefinementContext<'c>, cache: &ModuleCache<'c>) -> Refinements<'c> {
         Refinements::combine_all(
             self.statements.iter()
                 .map(|statement| statement.refine(context, cache))
@@ -257,21 +255,21 @@ impl<'z3, 'c> Refineable<'z3, 'c> for ast::Sequence<'c> {
     }
 }
 
-impl<'z3, 'c> Refineable<'z3, 'c> for ast::Extern<'c> {
-    fn refine(&self, context: &mut RefinementContext<'z3, 'c>, cache: &ModuleCache<'c>) -> Refinements<'z3, 'c> {
+impl<'c> Refineable<'c> for ast::Extern<'c> {
+    fn refine(&self, context: &mut RefinementContext<'c>, cache: &ModuleCache<'c>) -> Refinements<'c> {
         context.unrepresentable(self.typ.as_ref().unwrap(), cache)
     }
 }
 
-impl<'z3, 'c> Refineable<'z3, 'c> for ast::MemberAccess<'c> {
-    fn refine(&self, context: &mut RefinementContext<'z3, 'c>, cache: &ModuleCache<'c>) -> Refinements<'z3, 'c> {
+impl<'c> Refineable<'c> for ast::MemberAccess<'c> {
+    fn refine(&self, context: &mut RefinementContext<'c>, cache: &ModuleCache<'c>) -> Refinements<'c> {
         // TODO lookup datatype accessor
         context.unrepresentable(self.typ.as_ref().unwrap(), cache)
     }
 }
 
-impl<'z3, 'c> Refineable<'z3, 'c> for ast::Assignment<'c> {
-    fn refine(&self, _context: &mut RefinementContext<'z3, 'c>, _cache: &ModuleCache<'c>) -> Refinements<'z3, 'c> {
+impl<'c> Refineable<'c> for ast::Assignment<'c> {
+    fn refine(&self, _context: &mut RefinementContext<'c>, _cache: &ModuleCache<'c>) -> Refinements<'c> {
         Refinements::new(RefinementValue::Impure, vec![], vec![])
     }
 }

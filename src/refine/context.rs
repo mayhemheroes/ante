@@ -2,27 +2,23 @@ use crate::cache::{ ModuleCache, DefinitionInfoId, DefinitionKind, DefinitionInf
 use crate::types::{ self, Type, PrimitiveType, TypeInfoId, TypeInfoBody, TypeConstructor };
 use crate::error::location::Location;
 use crate::parser::ast;
-use crate::refine::Refineable;
+use crate::refine::{ Refineable, z3 };
 use crate::refine::refinements::{ Refinements, RefinementValue };
 use crate::util::{ fmap, indent };
 
+use unzip3::Unzip3;
 use std::collections::HashMap;
 
-use z3::ast::{ Ast, Bool, Int, Float, String };
-
-pub struct RefinementContext<'z3, 'c> {
-    pub z3_context: &'z3 z3::Context,
-    pub solver: z3::Solver<'z3>,
-    pub definitions: HashMap<DefinitionInfoId, Refinements<'z3, 'c>>,
-    pub types: HashMap<Type, z3::Sort<'z3>>,
+pub struct RefinementContext<'c> {
+    pub z3_context: z3::Context,
+    pub solver: z3::Solver,
+    pub definitions: HashMap<DefinitionInfoId, Refinements<'c>>,
+    pub types: HashMap<Type, z3::Sort>,
 }
 
-pub type Z3Ast<'z3> = z3::ast::Dynamic<'z3>;
-pub type Z3Bool<'z3> = z3::ast::Bool<'z3>;
-type Z3Int<'z3> = z3::ast::Int<'z3>;
-
-impl<'z3, 'c> RefinementContext<'z3, 'c> {
-    pub fn new(z3_context: &'z3 z3::Context) -> Self {
+impl<'c> RefinementContext<'c> {
+    pub fn new() -> Self {
+        let z3_context = z3::Context::new();
         RefinementContext { 
             z3_context,
             solver: z3::Solver::new(z3_context),
@@ -31,57 +27,47 @@ impl<'z3, 'c> RefinementContext<'z3, 'c> {
         }
     }
 
-    pub fn bool_value(&self, value: bool) -> Refinements<'z3, 'c> {
-        Refinements::from_value(Bool::from_bool(self.z3_context, value).into())
+    pub fn bool_value(&self, value: bool) -> Refinements<'c> {
+        Refinements::from_value(self.z3_context.bool_value(value))
     }
 
-    pub fn integer_value(&self, value: u64, signed: bool) -> Refinements<'z3, 'c> {
-        let value = if signed {
-            Int::from_i64(self.z3_context, value as i64)
-        } else {
-            Int::from_u64(self.z3_context, value)
-        };
-        Refinements::from_value(value.into())
+    pub fn integer_value(&self, value: u64, signed: bool) -> Refinements<'c> {
+        Refinements::from_value(self.z3_context.int_value(value, signed))
     }
 
-    pub fn float_value(&self, value: f64) -> Refinements<'z3, 'c> {
-        Refinements::from_value(Float::from_f64(self.z3_context, value).into())
+    pub fn float_value(&self, value: f64) -> Refinements<'c> {
+        Refinements::from_value(self.z3_context.double_value(value))
     }
 
-    pub fn string_value(&self, value: &str) -> Refinements<'z3, 'c> {
-        Refinements::from_value(String::from_str(self.z3_context, value).unwrap().into())
+    pub fn string_value(&self, value: &str) -> Refinements<'c> {
+        Refinements::from_value(self.z3_context.string_value(value))
     }
 
-    pub fn unrepresentable(&mut self, typ: &Type, cache: &ModuleCache<'c>) -> Refinements<'z3, 'c> {
-        Refinements::from_value(self.hidden_variable("unrepresentable", typ, cache))
+    pub fn unrepresentable(&mut self, typ: &Type, cache: &ModuleCache<'c>) -> Refinements<'c> {
+        Refinements::from_value(self.hidden_variable(typ, cache))
     }
 
-    pub fn unrepresentable_value(&mut self, typ: &Type, cache: &ModuleCache<'c>) -> RefinementValue<'z3> {
-        RefinementValue::Pure(self.hidden_variable("unrepresentable", typ, cache))
+    pub fn unrepresentable_value(&mut self, typ: &Type, cache: &ModuleCache<'c>) -> RefinementValue {
+        RefinementValue::Pure(self.hidden_variable(typ, cache))
     }
 
-    pub fn variable(&self, name: &str, sort: z3::Sort<'z3>) -> Z3Ast<'z3> {
-        z3::FuncDecl::new(self.z3_context, name, &[], &sort).apply(&[])
+    pub fn variable(&self, name: &str, sort: z3::Sort) -> z3::Ast {
+        self.z3_context.mk_const(name, sort)
     }
 
     /// Create a fresh variable that is hidden from the user when outputting
     /// z3's model. In ante this is used to stand in for impure values or values
     /// of types that z3 can't represent like first-class functions.
-    pub fn hidden_variable(&mut self, prefix: &str, typ: &Type, cache: &ModuleCache<'c>) -> Z3Ast<'z3> {
+    pub fn hidden_variable(&mut self, typ: &Type, cache: &ModuleCache<'c>) -> z3::Ast {
         let sort = self.type_to_sort(typ, cache);
-        match sort.kind() {
-            z3::SortKind::Int => Z3Int::fresh_const(self.z3_context, prefix).into(),
-            z3::SortKind::Bool => Z3Bool::fresh_const(self.z3_context, prefix).into(),
-            z3::SortKind::FloatingPoint => z3::ast::Float::fresh_const_double(self.z3_context, prefix).into(),
-            _ => z3::ast::Datatype::fresh_const(self.z3_context, prefix, &sort).into(),
-        }
+        self.z3_context.mk_fresh(sort)
     }
 
-    fn add_definition(&mut self, id: DefinitionInfoId, refinements: Refinements<'z3, 'c>) {
+    fn add_definition(&mut self, id: DefinitionInfoId, refinements: Refinements<'c>) {
         self.definitions.entry(id).or_insert(refinements);
     }
 
-    pub fn type_to_sort(&mut self, typ: &Type, cache: &ModuleCache<'c>) -> z3::Sort<'z3> {
+    pub fn type_to_sort(&mut self, typ: &Type, cache: &ModuleCache<'c>) -> z3::Sort {
         use crate::types::Type::*;
         match typ {
             Primitive(primitive) => self.primitive_type_to_sort(primitive, cache),
@@ -91,7 +77,7 @@ impl<'z3, 'c> RefinementContext<'z3, 'c> {
             TypeVariable(id) => {
                 match cache.find_binding(*id) {
                     Some(binding) => self.type_to_sort(binding, cache),
-                    None => z3::Sort::int(self.z3_context), // TODO: Can we get away with translating generic params into ints?
+                    None => self.z3_context.int_sort(), // TODO: Can we get away with translating generic params into ints?
                 }
             },
 
@@ -113,19 +99,19 @@ impl<'z3, 'c> RefinementContext<'z3, 'c> {
         }
     }
 
-    fn primitive_type_to_sort(&mut self, typ: &PrimitiveType, _cache: &ModuleCache<'c>) -> z3::Sort<'z3> {
+    fn primitive_type_to_sort(&mut self, typ: &PrimitiveType, _cache: &ModuleCache<'c>) -> z3::Sort {
         use types::PrimitiveType::*;
         match typ {
-            IntegerType(_) => z3::Sort::int(self.z3_context),
-            FloatType => z3::Sort::double(self.z3_context),
-            CharType => z3::Sort:: int(self.z3_context), // TODO: Should Char/Unit be None?
-            BooleanType => z3::Sort::bool(self.z3_context),
-            UnitType => z3::Sort::bool(self.z3_context),
+            IntegerType(_) => self.z3_context.int_sort(),
+            FloatType => self.z3_context.double_sort(),
+            CharType => self.z3_context.int_sort(), // TODO: Should Char/Unit be None?
+            BooleanType => self.z3_context.bool_sort(),
+            UnitType => self.z3_context.bool_sort(),
         }
     }
 
     fn function_to_sort(&mut self, typ: &Type, return_type: &Type,
-        args: &[Type], varargs: bool, cache: &ModuleCache<'c>) -> z3::Sort<'z3>
+        args: &[Type], varargs: bool, cache: &ModuleCache<'c>) -> z3::Sort
     {
         // no function sort in z3, use an uninterpreted sort instead
         let args = fmap(args, |arg| cache.follow_bindings(arg));
@@ -142,13 +128,13 @@ impl<'z3, 'c> RefinementContext<'z3, 'c> {
         self.type_to_sort(&return_type, cache);
 
         let name = typ.display(cache).to_string();
-        let sort = z3::Sort::uninterpreted(self.z3_context, z3::Symbol::String(name));
+        let sort = self.z3_context.uninterpreted_sort(&name);
         let typ = Type::Function(args, Box::new(return_type), varargs);
         self.types.insert(typ, sort.clone());
         sort
     }
 
-    fn type_application_to_sort(&mut self, typ: &Type, args: &[Type], cache: &ModuleCache<'c>) -> z3::Sort<'z3> {
+    fn type_application_to_sort(&mut self, typ: &Type, args: &[Type], cache: &ModuleCache<'c>) -> z3::Sort {
         let args = fmap(args, |arg| cache.follow_bindings(arg));
         let typ = cache.follow_bindings(typ);
 
@@ -162,7 +148,7 @@ impl<'z3, 'c> RefinementContext<'z3, 'c> {
                     return sort.clone();
                 }
 
-                let sort = z3::Sort::uninterpreted(self.z3_context, z3::Symbol::String(name));
+                let sort = self.z3_context.uninterpreted_sort(&name);
                 self.types.insert(typ, sort.clone());
                 sort
             },
@@ -173,7 +159,7 @@ impl<'z3, 'c> RefinementContext<'z3, 'c> {
         }
     }
 
-    fn user_defined_type_to_sort(&mut self, typ: &Type, id: TypeInfoId, args: Vec<Type>, cache: &ModuleCache<'c>) -> z3::Sort<'z3> {
+    fn user_defined_type_to_sort(&mut self, typ: &Type, id: TypeInfoId, args: Vec<Type>, cache: &ModuleCache<'c>) -> z3::Sort {
         if let Some(sort) = self.types.get(&typ) {
             return sort.clone();
         }
@@ -214,48 +200,46 @@ impl<'z3, 'c> RefinementContext<'z3, 'c> {
         sort
     }
 
-    fn sum_type_to_sort(&mut self, typename: &str, variants: &[TypeConstructor<'c>], cache: &ModuleCache<'c>) -> z3::Sort<'z3> {
-        let mut builder = z3::DatatypeBuilder::new(self.z3_context, typename.to_string());
+    fn sum_type_to_sort(&mut self, typename: &str, variants: &[TypeConstructor<'c>], cache: &ModuleCache<'c>) -> z3::Sort {
         let mut ids_and_fields = vec![];
+        let mut constructors = vec![];
 
-        // TODO: using the high-level z3 api is painful here - it forces us to use two loops.
-        // investigate if using z3_sys here would allow us to do the same thing in fewer lines.
         for variant in variants {
-            let field_names: Vec<_> = variant.args.iter().enumerate().map(|(i, _)| {
-                format!("{}${}${}", typename, variant.name, i)
-            }).collect();
-
-            let mut field_vars = vec![];
-
-            let fields = variant.args.iter().enumerate().map(|(i, field)| {
-                let sort = self.type_to_sort(&field, cache);
-                let name: &str = &field_names[i];
-                field_vars.push(self.variable(name, sort.clone()));
-                (name, z3::DatatypeAccessor::Sort(sort))
-            }).collect();
+            let (fields, field_names, field_vars) : (Vec<_>, Vec<_>, Vec<_>) =
+                variant.args.iter().enumerate().map(|(i, field)| {
+                    let sort = self.type_to_sort(&field, cache);
+                    let name = format!("{}${}${}", typename, variant.name, i);
+                    let symbol = self.z3_context.symbol(&name);
+                    let variable = self.variable(&name, sort.clone());
+                    (sort, symbol, variable)
+                }).unzip3();
 
             let name = format!("{}${}${}", typename, variant.name, variant.id.0);
-            builder = builder.variant(&name, fields);
+            let constructor = self.z3_context.mk_constructor(&name, &fields, &field_names);
+
+            constructors.push(constructor);
             ids_and_fields.push((variant.id, field_vars));
         }
 
-        let datatype = builder.finish();
-        for (variant, (constructor_id, field_vars)) in datatype.variants.iter().zip(ids_and_fields) {
-            let constructor = Self::get_constructor_value(&variant.constructor, field_vars);
+        let datatype = self.z3_context.mk_datatype(typename, &constructors);
+
+        for (n, (constructor_id, field_vars)) in ids_and_fields.into_iter().enumerate() {
+            let constructor_function = self.z3_context.get_nth_constructor(datatype, n);
+            let constructor = self.get_constructor_value(constructor_function, field_vars);
             self.add_definition(constructor_id, constructor);
         }
-        datatype.sort
+        datatype
     }
 
-    fn get_constructor_value(constructor: &z3::FuncDecl<'z3>, parameters: Vec<Z3Ast<'z3>>) -> Refinements<'z3, 'c> {
-        if constructor.arity() == 0 {
-            Refinements::from_value(constructor.apply(&[]))
+    fn get_constructor_value(&self, constructor: z3::FuncDecl, parameters: Vec<z3::Ast>) -> Refinements<'c> {
+        if parameters.is_empty() {
+            Refinements::from_value(self.z3_context.apply(constructor, &[]))
         } else {
             Refinements::function(constructor.clone(), parameters)
         }
     }
 
-    pub fn refine_pattern(&mut self, ast: &ast::Ast<'c>, cache: &ModuleCache<'c>) -> (Refinements<'z3, 'c>, Vec<DefinitionInfoId>) {
+    pub fn refine_pattern(&mut self, ast: &ast::Ast<'c>, cache: &ModuleCache<'c>) -> (Refinements<'c>, Vec<DefinitionInfoId>) {
         use ast::Ast::*;
         match ast {
             Literal(literal) => {
@@ -298,8 +282,7 @@ impl<'z3, 'c> RefinementContext<'z3, 'c> {
 
                 let value = match f.value {
                     RefinementValue::Function(f) => {
-                        let arg_refs: Vec<_> = args.iter().collect();
-                        RefinementValue::Pure(f.0.apply(&arg_refs))
+                        RefinementValue::Pure(self.z3_context.apply(f.0, &args))
                     }
                     _ => {
                         let value = self.hidden_variable("call", call.typ.as_ref().unwrap(), cache);
@@ -314,7 +297,7 @@ impl<'z3, 'c> RefinementContext<'z3, 'c> {
         }
     }
 
-    pub fn refine_definition(&mut self, id: DefinitionInfoId, typ: &Type, cache: &ModuleCache<'c>) -> Refinements<'z3, 'c> {
+    pub fn refine_definition(&mut self, id: DefinitionInfoId, typ: &Type, cache: &ModuleCache<'c>) -> Refinements<'c> {
         if let Some(refinements) = self.definitions.get(&id) {
             return refinements.clone();
         }
@@ -351,9 +334,9 @@ impl<'z3, 'c> RefinementContext<'z3, 'c> {
         refinements
     }
 
-    pub fn define_function(&mut self, name: &str, parameters: Vec<Refinements<'z3, 'c>>,
-        given_clause: Option<Refinements<'z3, 'c>>,
-        body: Refinements<'z3, 'c>, location: Location<'c>) -> Refinements<'z3, 'c>
+    pub fn define_function(&mut self, name: &str, parameters: Vec<Refinements<'c>>,
+        given_clause: Option<Refinements<'c>>,
+        body: Refinements<'c>, location: Location<'c>) -> Refinements<'c>
     {
         match &body.value {
             RefinementValue::Impure => body,
@@ -384,7 +367,7 @@ impl<'z3, 'c> RefinementContext<'z3, 'c> {
         }
     }
 
-    pub fn bind(&mut self, definitions: &[DefinitionInfoId], pattern: Refinements<'z3, 'c>, value: Refinements<'z3, 'c>) {
+    pub fn bind(&mut self, definitions: &[DefinitionInfoId], pattern: Refinements<'c>, value: Refinements<'c>) {
         let binding = pattern.bind_to(value);
 
         for definition in definitions {
@@ -394,7 +377,7 @@ impl<'z3, 'c> RefinementContext<'z3, 'c> {
         }
     }
 
-    pub fn check_builtin(&mut self, id: DefinitionInfoId, definition: &DefinitionInfo, typ: &Type) -> Option<Refinements<'z3, 'c>> {
+    pub fn check_builtin(&mut self, id: DefinitionInfoId, definition: &DefinitionInfo, typ: &Type) -> Option<Refinements<'c>> {
         let args = match typ {
             Type::Function(params, ..) => params,
             _ => return None,
@@ -426,7 +409,7 @@ impl<'z3, 'c> RefinementContext<'z3, 'c> {
                 } else if definition.name == Token::EqualEqual.to_string() {
                     return self.make_builtin(&name, "q", "r", |_, a, b| a._eq(b).into());
                 } else if definition.name == Token::NotEqual.to_string() {
-                    return self.make_builtin(&name, "s", "t", |c, a, b| Z3Ast::distinct(c, &[&a.to_owned().into(), &b.to_owned().into()]).into());
+                    return self.make_builtin(&name, "s", "t", |c, a, b| z3::Ast::distinct(c, &[&a.to_owned().into(), &b.to_owned().into()]).into());
                 }
             },
             _ => (),
@@ -435,8 +418,8 @@ impl<'z3, 'c> RefinementContext<'z3, 'c> {
         None
     }
 
-    fn make_builtin<F>(&self, name: &str, param1: &str, param2: &str, f: F) -> Option<Refinements<'z3, 'c>>
-        where F: FnOnce(&'z3 z3::Context, &Z3Int<'z3>, &Z3Int<'z3>) -> Z3Ast<'z3>
+    fn make_builtin<F>(&self, name: &str, param1: &str, param2: &str, f: F) -> Option<Refinements<'c>>
+        where F: FnOnce(&'z3 z3::Context, &z3::Ast, &z3::Ast) -> z3::Ast
     {
         let a = Int::new_const(self.z3_context, param1);
         let b = Int::new_const(self.z3_context, param2);
