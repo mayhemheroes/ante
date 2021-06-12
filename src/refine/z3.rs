@@ -2,18 +2,21 @@
 //! providing helper functions without changing any
 //! actual behavior.
 use z3_sys::*;
-use std::ffi::CString;
+use std::ffi::{ CStr, CString };
 
 #[derive(Copy, Clone)]
 pub struct Context(Z3_context);
 
 #[derive(Copy, Clone)]
-pub struct Solver(Z3_solver);
+pub struct Solver {
+    context: Z3_context,
+    solver: Z3_solver,
+}
 
 pub enum SatResult {
     Sat(Model),
     Unsat,
-    Unknown,
+    Unknown(/*reason:*/String),
 }
 
 pub type Model = Z3_model;
@@ -158,9 +161,31 @@ impl Context {
         }
     }
 
+    pub fn display(self, ast: Ast) -> DisplayAst {
+        DisplayAst { context: self, ast }
+    }
+
     pub fn apply(self, func_decl: FuncDecl, args: &[Ast]) -> Ast {
         unsafe {
             Z3_mk_app(self.0, func_decl, args.len() as u32, args.as_ptr())
+        }
+    }
+
+    pub fn and(self, args: &[Ast]) -> Ast {
+        unsafe {
+            Z3_mk_and(self.0, args.len() as u32, args.as_ptr())
+        }
+    }
+
+    pub fn eq(self, arg1: Ast, arg2: Ast) -> Ast {
+        unsafe {
+            Z3_mk_eq(self.0, arg1, arg2)
+        }
+    }
+
+    pub fn not(self, arg: Ast) -> Ast {
+        unsafe {
+            Z3_mk_not(self.0, arg)
         }
     }
 }
@@ -168,32 +193,61 @@ impl Context {
 impl Solver {
     pub fn new(context: Context) -> Solver {
         unsafe { 
-            let solver = Z3_mk_solver(context.0);
+            let context = context.0;
+            let solver = Z3_mk_solver(context);
             // Z3_solver_inc_ref(self.0, solver);
-            Solver(solver)
+            Solver { solver, context }
         }
     }
 
-    pub fn check(self, context: Context) -> SatResult {
+    pub fn check(self) -> SatResult {
         unsafe {
-            match Z3_solver_check(context.0, self.0) {
+            match Z3_solver_check(self.context, self.solver) {
                 Z3_L_TRUE => {
-                    let model = Z3_solver_get_model(context.0, self.0);
+                    let model = Z3_solver_get_model(self.context, self.solver);
                     SatResult::Sat(model)
                 },
                 Z3_L_FALSE => SatResult::Unsat,
-                Z3_L_UNDEF => SatResult::Unknown,
+                Z3_L_UNDEF => {
+                    let reason = Z3_solver_get_reason_unknown(self.context, self.solver);
+                    let reason = CStr::from_ptr(reason).to_string_lossy();
+                    SatResult::Unknown(reason.to_string())
+                },
                 _ => unreachable!(),
             }
         }
     }
 
     pub fn push(self) {
+        unsafe {
+            Z3_solver_push(self.context, self.solver)
+        }
     }
 
     pub fn pop(self) {
+        unsafe {
+            Z3_solver_pop(self.context, self.solver, 1)
+        }
     }
 
-    pub fn assert(self) {
+    pub fn assert(self, assertion: Ast) {
+        unsafe {
+            Z3_solver_assert(self.context, self.solver, assertion)
+        }
+    }
+}
+
+struct DisplayAst {
+    context: Context,
+    ast: Ast,
+}
+
+impl std::fmt::Display for DisplayAst {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        unsafe {
+            let cstr = Z3_ast_to_string(self.context.0, self.ast);
+            let string = CStr::from_ptr(cstr).to_string_lossy();
+            write!(f, "{}", string)
+        }
     }
 }

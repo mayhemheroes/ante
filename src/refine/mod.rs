@@ -18,7 +18,7 @@ pub fn refine<'c>(ast: &ast::Ast<'c>, output_refinements: bool, cache: &ModuleCa
         context.output_refinements(cache);
     }
 
-    for binding in &refinements.bindings {
+    for binding in refinements.bindings {
         context.solver.assert(binding);
     }
 
@@ -26,17 +26,17 @@ pub fn refine<'c>(ast: &ast::Ast<'c>, output_refinements: bool, cache: &ModuleCa
         // We must push and pop asserts each time otherwise the
         // first unsat result will cause all following results to be unsat
         context.solver.push();
-        context.solver.assert(&assert.0.not());
+        context.solver.assert(context.z3_context.not(assert.0));
         match context.solver.check() {
             z3::SatResult::Sat(model) => {
-                context.issue_refinement_error(&assert.0, model, cache, assert.1, assert.2);
+                context.issue_refinement_error(assert.0, model, cache, assert.1, assert.2);
             },
             z3::SatResult::Unsat => {},
-            z3::SatResult::Unknown => {
-                error!(assert.1, "error while solving {}: {}", assert.0, context.solver.get_reason_unknown().unwrap());
+            z3::SatResult::Unknown(reason) => {
+                error!(assert.1, "error while solving {}: {}", context.z3_context.display(assert.0), reason);
             }
         }
-        context.solver.pop(1);
+        context.solver.pop();
     }
 }
 
@@ -149,7 +149,7 @@ impl<'c> Refineable<'c> for ast::If<'c> {
         if let Some(otherwise) = self.otherwise.as_ref() {
             let otherwise = otherwise.refine(context, cache);
 
-            let not = cond.map_value(|cond| cond.as_bool().unwrap().not().into());
+            let not = cond.map_value(|cond| context.z3_context.not(cond));
             let mut otherwise = not.implies(otherwise);
 
             asserts.append(&mut otherwise.0);
@@ -173,23 +173,22 @@ impl<'c> Refineable<'c> for ast::Match<'c> {
             let pattern = pattern.refine(context, cache);
             let branch = branch.refine(context, cache);
 
-            match (&pattern.value, &match_expr.value) {
+            match (pattern.value, match_expr.value) {
                 (RefinementValue::Pure(pattern_value), RefinementValue::Pure(value)) => {
-                    let eq = value._eq(pattern_value);
+                    let eq = context.z3_context.eq(value, pattern_value);
                     previous_cases.push(eq.clone());
 
                     let ret = if previous_cases.len() == 1 {
                         eq.clone()
                     } else {
-                        let cases = previous_cases.iter().collect::<Vec<_>>();
-                        z3::ast::Bool::and(context.z3_context, &cases)
+                        context.z3_context.and(&previous_cases)
                     };
 
                     let pattern_matches = pattern.set_return(ret.into());
 
                     // Future cases will know the value didn't match the previous patterns
                     previous_cases.pop();
-                    previous_cases.push(eq.not());
+                    previous_cases.push(context.z3_context.not(eq));
 
                     let mut branch_matched = pattern_matches.implies(branch);
                     asserts.append(&mut branch_matched.0);
