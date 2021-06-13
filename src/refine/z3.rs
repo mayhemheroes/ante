@@ -114,6 +114,10 @@ impl Context {
         unsafe { Z3_mk_uninterpreted_sort(self.0, self.symbol(name)) }
     }
 
+    pub fn get_sort(self, ast: Ast) -> Sort {
+        unsafe { Z3_get_sort(self.0, ast) }
+    }
+
     pub fn symbol(self, name: &str) -> Symbol {
         let name = CString::new(name).unwrap();
         unsafe {

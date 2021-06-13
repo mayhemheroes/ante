@@ -170,27 +170,14 @@ impl<'c> RefinementContext<'c> {
         // TODO: We may need to handle monomorphisation mappings in these translations
         let sort = match &info.body {
             TypeInfoBody::Union(variants) => {
-                self.sum_type_to_sort(&name, variants, cache)
+                let iter = variants.iter().map(|variant| (variant.id,
+                    variant.args.iter()
+                ));
+                self.make_datatype_sort(&name, iter, cache)
             },
             TypeInfoBody::Struct(fields, id) => {
-                let mut field_accessors = vec![];
-                let mut field_vars = vec![];
-                let name = format!("{}${}", name, id.0);
-
-                for field in fields {
-                    let sort = self.type_to_sort(&field.field_type, cache);
-                    let name: &str = &field.name;
-                    field_vars.push(self.variable(name, sort.clone()));
-                    field_accessors.push((name, z3::DatatypeAccessor::Sort(sort)))
-                }
-
-                let datatype = z3::DatatypeBuilder::new(self.z3_context, name.clone())
-                    .variant(&name, field_accessors)
-                    .finish();
-
-                let constructor = Self::get_constructor_value(&datatype.variants[0].constructor, field_vars);
-                self.add_definition(*id, constructor);
-                datatype.sort
+                let iter = vec![(*id, fields.iter().map(|field| &field.field_type))];
+                self.make_datatype_sort(&name, iter.into_iter(), cache)
             },
             TypeInfoBody::Alias(typ) => self.type_to_sort(typ, cache),
             TypeInfoBody::Unknown => unreachable!("info.body of {} is unknown", name),
@@ -200,25 +187,36 @@ impl<'c> RefinementContext<'c> {
         sort
     }
 
-    fn sum_type_to_sort(&mut self, typename: &str, variants: &[TypeConstructor<'c>], cache: &ModuleCache<'c>) -> z3::Sort {
+    /// Translates a datatype in ante to a datatype sort in z3, creating constructors
+    /// and accessors in the processors.
+    ///
+    /// The VariantIter argument here is essentially a Vec<(Id, Vec<Type>)> in iterator
+    /// form. It is the sum of products used to represent any datatype. There is a DefinitionInfoId
+    /// for each constructor of the type.
+    fn make_datatype_sort<'a, VariantIter, ProuctIter>(&mut self, typename: &str, variants: VariantIter, cache: &ModuleCache<'c>) -> z3::Sort
+        where VariantIter: Iterator<Item = (DefinitionInfoId, ProuctIter)>,
+              ProuctIter: Iterator<Item = &'a Type>
+    {
         let mut ids_and_fields = vec![];
         let mut constructors = vec![];
 
-        for variant in variants {
+        for (variant_id, variant) in variants {
+            let variant_name = &cache.definition_infos[variant_id.0].name;
+
             let (fields, field_names, field_vars) : (Vec<_>, Vec<_>, Vec<_>) =
-                variant.args.iter().enumerate().map(|(i, field)| {
+                variant.enumerate().map(|(i, field)| {
                     let sort = self.type_to_sort(&field, cache);
-                    let name = format!("{}${}${}", typename, variant.name, i);
+                    let name = format!("{}${}${}", typename, variant_name, i);
                     let symbol = self.z3_context.symbol(&name);
                     let variable = self.variable(&name, sort.clone());
                     (sort, symbol, variable)
                 }).unzip3();
 
-            let name = format!("{}${}${}", typename, variant.name, variant.id.0);
+            let name = format!("{}${}${}", typename, variant_name, variant_id.0);
             let constructor = self.z3_context.mk_constructor(&name, &fields, &field_names);
 
             constructors.push(constructor);
-            ids_and_fields.push((variant.id, field_vars));
+            ids_and_fields.push((variant_id, field_vars));
         }
 
         let datatype = self.z3_context.mk_datatype(typename, &constructors);
@@ -285,7 +283,7 @@ impl<'c> RefinementContext<'c> {
                         RefinementValue::Pure(self.z3_context.apply(f.0, &args))
                     }
                     _ => {
-                        let value = self.hidden_variable("call", call.typ.as_ref().unwrap(), cache);
+                        let value = self.hidden_variable(call.typ.as_ref().unwrap(), cache);
                         RefinementValue::Pure(value)
                     }
                 };
@@ -338,15 +336,15 @@ impl<'c> RefinementContext<'c> {
         given_clause: Option<Refinements<'c>>,
         body: Refinements<'c>, location: Location<'c>) -> Refinements<'c>
     {
-        match &body.value {
+        match body.value {
             RefinementValue::Impure => body,
             RefinementValue::Pure(body_value) => {
-                let range = body_value.get_sort();
+                let range = self.z3_context.get_sort(body_value);
 
                 let (param_values, domain) : (Vec<_>, Vec<_>) =
                     parameters.iter().map(|param| {
                         let value = param.get_value().unwrap();
-                        let sort = value.get_sort();
+                        let sort = self.z3_context.get_sort(value);
                         (value, sort)
                     }).unzip();
 
@@ -419,13 +417,13 @@ impl<'c> RefinementContext<'c> {
     }
 
     fn make_builtin<F>(&self, name: &str, param1: &str, param2: &str, f: F) -> Option<Refinements<'c>>
-        where F: FnOnce(&'z3 z3::Context, &z3::Ast, &z3::Ast) -> z3::Ast
+        where F: FnOnce(z3::Context, &z3::Ast, &z3::Ast) -> z3::Ast
     {
         let a = Int::new_const(self.z3_context, param1);
         let b = Int::new_const(self.z3_context, param2);
         let body = f(self.z3_context, &a, &b);
-        let arg_sort = a.get_sort();
-        let ret_sort = body.get_sort();
+        let arg_sort = self.z3_context.get_sort(a);
+        let ret_sort = self.z3_context.get_sort(body);
 
         let (a, b) = (a.into(), b.into());
         let f = z3::FuncDecl::new_recursive(self.z3_context, name, &[&arg_sort, &arg_sort], &ret_sort);
