@@ -3,6 +3,7 @@
 //! actual behavior.
 use z3_sys::*;
 use std::ffi::{ CStr, CString };
+use crate::util::fmap;
 
 #[derive(Copy, Clone)]
 pub struct Context(Z3_context);
@@ -139,7 +140,7 @@ impl Context {
 
             // TODO: These are all "Sort" datatype accessors, these probably don't
             // work for recursive datatypes.
-            let sort_refs: Vec<std::os::raw::c_uint> = vec![0; fields.len()];
+            let mut sort_refs: Vec<std::os::raw::c_uint> = vec![0; fields.len()];
 
             Z3_mk_constructor(self.0,
                 name,
@@ -152,7 +153,7 @@ impl Context {
         }
     }
 
-    pub fn mk_datatype(self, name: &str, constructors: &[Constructor]) -> Sort {
+    pub fn mk_datatype(self, name: &str, constructors: &mut [Constructor]) -> Sort {
         unsafe {
             let name = self.symbol(name);
             Z3_mk_datatype(self.0, name, constructors.len() as u32, constructors.as_mut_ptr())
@@ -165,8 +166,19 @@ impl Context {
         }
     }
 
-    pub fn display(self, ast: Ast) -> DisplayAst {
-        DisplayAst { context: self, ast }
+    pub fn ast_to_string(self, ast: Ast) -> String {
+        unsafe {
+            let cstr = Z3_ast_to_string(self.0, ast);
+            CStr::from_ptr(cstr).to_string_lossy().to_string()
+        }
+    }
+
+    pub fn func_decl_to_string(self, func: FuncDecl) -> String {
+        unsafe {
+            let cstring = Z3_func_decl_to_string(self.0, func);
+            let cstring = CStr::from_ptr(cstring);
+            cstring.to_string_lossy().to_string()
+        }
     }
 
     pub fn apply(self, func_decl: FuncDecl, args: &[Ast]) -> Ast {
@@ -187,9 +199,105 @@ impl Context {
         }
     }
 
+    pub fn neq(self, arg1: Ast, arg2: Ast) -> Ast {
+        unsafe {
+            let args = [arg1, arg2];
+            Z3_mk_distinct(self.0, 2, args.as_ptr())
+        }
+    }
+
+    pub fn implies(self, arg1: Ast, arg2: Ast) -> Ast {
+        unsafe {
+            Z3_mk_implies(self.0, arg1, arg2)
+        }
+    }
+
+    pub fn add(self, arg1: Ast, arg2: Ast) -> Ast {
+        unsafe {
+            let args = [arg1, arg2];
+            Z3_mk_add(self.0, 2, args.as_ptr())
+        }
+    }
+
+    pub fn sub(self, arg1: Ast, arg2: Ast) -> Ast {
+        unsafe {
+            let args = [arg1, arg2];
+            Z3_mk_sub(self.0, 2, args.as_ptr())
+        }
+    }
+
+    pub fn mul(self, arg1: Ast, arg2: Ast) -> Ast {
+        unsafe {
+            let args = [arg1, arg2];
+            Z3_mk_mul(self.0, 2, args.as_ptr())
+        }
+    }
+
+    pub fn div(self, arg1: Ast, arg2: Ast) -> Ast {
+        unsafe {
+            Z3_mk_div(self.0, arg1, arg2)
+        }
+    }
+
+    pub fn lt(self, arg1: Ast, arg2: Ast) -> Ast {
+        unsafe {
+            Z3_mk_lt(self.0, arg1, arg2)
+        }
+    }
+
+    pub fn le(self, arg1: Ast, arg2: Ast) -> Ast {
+        unsafe {
+            Z3_mk_le(self.0, arg1, arg2)
+        }
+    }
+
+    pub fn gt(self, arg1: Ast, arg2: Ast) -> Ast {
+        unsafe {
+            Z3_mk_gt(self.0, arg1, arg2)
+        }
+    }
+
+    pub fn ge(self, arg1: Ast, arg2: Ast) -> Ast {
+        unsafe {
+            Z3_mk_ge(self.0, arg1, arg2)
+        }
+    }
+
     pub fn not(self, arg: Ast) -> Ast {
         unsafe {
             Z3_mk_not(self.0, arg)
+        }
+    }
+
+    pub fn eval(self, model: Model, ast: Ast) -> Option<Ast> {
+        unsafe {
+            let mut buffer = std::mem::zeroed();
+            if Z3_model_eval(self.0, model, ast, true, &mut buffer) {
+                Some(buffer)
+            } else {
+                None
+            }
+        }
+    }
+
+    pub fn substitute(self, ast: Ast, from: &[Ast], to: &[Ast]) -> Ast {
+        assert_eq!(from.len(), to.len());
+        unsafe {
+            Z3_substitute(self.0, ast, from.len() as u32, from.as_ptr(), to.as_ptr())
+        }
+    }
+
+    pub fn define_function(self, name: &str, args: &mut [Ast], body: Ast) -> FuncDecl {
+        let arg_sorts = fmap(args, |&arg| self.get_sort(arg));
+        let body_sort = self.get_sort(body);
+        let name = self.symbol(name);
+
+        unsafe {
+            let decl = Z3_mk_rec_func_decl(self.0, name, arg_sorts.len() as u32,
+                arg_sorts.as_ptr(), body_sort);
+
+            Z3_add_rec_def(self.0, decl, args.len() as u32, args.as_mut_ptr(), body);
+            decl
         }
     }
 }
@@ -237,21 +345,6 @@ impl Solver {
     pub fn assert(self, assertion: Ast) {
         unsafe {
             Z3_solver_assert(self.context, self.solver, assertion)
-        }
-    }
-}
-
-struct DisplayAst {
-    context: Context,
-    ast: Ast,
-}
-
-impl std::fmt::Display for DisplayAst {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        unsafe {
-            let cstr = Z3_ast_to_string(self.context.0, self.ast);
-            let string = CStr::from_ptr(cstr).to_string_lossy();
-            write!(f, "{}", string)
         }
     }
 }

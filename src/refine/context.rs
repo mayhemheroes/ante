@@ -1,5 +1,5 @@
 use crate::cache::{ ModuleCache, DefinitionInfoId, DefinitionKind, DefinitionInfo };
-use crate::types::{ self, Type, PrimitiveType, TypeInfoId, TypeInfoBody, TypeConstructor };
+use crate::types::{ self, Type, PrimitiveType, TypeInfoId, TypeInfoBody };
 use crate::error::location::Location;
 use crate::parser::ast;
 use crate::refine::{ Refineable, z3 };
@@ -219,7 +219,7 @@ impl<'c> RefinementContext<'c> {
             ids_and_fields.push((variant_id, field_vars));
         }
 
-        let datatype = self.z3_context.mk_datatype(typename, &constructors);
+        let datatype = self.z3_context.mk_datatype(typename, &mut constructors);
 
         for (n, (constructor_id, field_vars)) in ids_and_fields.into_iter().enumerate() {
             let constructor_function = self.z3_context.get_nth_constructor(datatype, n);
@@ -339,22 +339,11 @@ impl<'c> RefinementContext<'c> {
         match body.value {
             RefinementValue::Impure => body,
             RefinementValue::Pure(body_value) => {
-                let range = self.z3_context.get_sort(body_value);
-
-                let (param_values, domain) : (Vec<_>, Vec<_>) =
-                    parameters.iter().map(|param| {
-                        let value = param.get_value().unwrap();
-                        let sort = self.z3_context.get_sort(value);
-                        (value, sort)
-                    }).unzip();
+                let mut param_values = fmap(&parameters, |param| param.get_value().unwrap());
 
                 let params = Refinements::combine_all(parameters.into_iter());
 
-                let param_refs: Vec<_> = param_values.iter().collect();
-                let domain_refs: Vec<_> = domain.iter().collect();
-
-                let decl = z3::FuncDecl::new_recursive(self.z3_context, name, &domain_refs, &range);
-                decl.set_body(&param_refs, body_value);
+                let decl = self.z3_context.define_function(name, &mut param_values, body_value);
 
                 Refinements::function(decl, param_values)
                     .combine(params)
@@ -366,7 +355,7 @@ impl<'c> RefinementContext<'c> {
     }
 
     pub fn bind(&mut self, definitions: &[DefinitionInfoId], pattern: Refinements<'c>, value: Refinements<'c>) {
-        let binding = pattern.bind_to(value);
+        let binding = pattern.bind_to(value, self.z3_context);
 
         for definition in definitions {
             self.definitions.entry(*definition).and_modify(|entry| {
@@ -389,25 +378,25 @@ impl<'c> RefinementContext<'c> {
                 let name = format!("{}${}", definition.name, id.0);
 
                 if definition.name == Token::Add.to_string() {
-                    return self.make_builtin(&name, "a", "b", |c, a, b| Int::add(c, &[a, b]).into());
+                    return self.make_builtin(&name, "a", "b", |c, a, b| c.add(a, b));
                 } else if definition.name == Token::Subtract.to_string() {
-                    return self.make_builtin(&name, "c", "d", |c, a, b| Int::sub(c, &[a, b]).into());
+                    return self.make_builtin(&name, "c", "d", |c, a, b| c.sub(a, b));
                 } else if definition.name == Token::Multiply.to_string() {
-                    return self.make_builtin(&name, "e", "f", |c, a, b| Int::mul(c, &[a, b]).into());
+                    return self.make_builtin(&name, "e", "f", |c, a, b| c.mul(a, b));
                 } else if definition.name == Token::Divide.to_string() {
-                    return self.make_builtin(&name, "g", "h", |_, a, b| a.div(b).into());
+                    return self.make_builtin(&name, "g", "h", |c, a, b| c.div(a, b));
                 } else if definition.name == Token::LessThan.to_string() {
-                    return self.make_builtin(&name, "i", "j", |_, a, b| a.lt(b).into());
+                    return self.make_builtin(&name, "i", "j", |c, a, b| c.lt(a, b));
                 } else if definition.name == Token::LessThanOrEqual.to_string() {
-                    return self.make_builtin(&name, "k", "l", |_, a, b| a.le(b).into());
+                    return self.make_builtin(&name, "k", "l", |c, a, b| c.le(a, b));
                 } else if definition.name == Token::GreaterThan.to_string() {
-                    return self.make_builtin(&name, "m", "n", |_, a, b| a.gt(b).into());
+                    return self.make_builtin(&name, "m", "n", |c, a, b| c.gt(a, b));
                 } else if definition.name == Token::GreaterThanOrEqual.to_string() {
-                    return self.make_builtin(&name, "o", "p", |_, a, b| a.ge(b).into());
+                    return self.make_builtin(&name, "o", "p", |c, a, b| c.ge(a, b));
                 } else if definition.name == Token::EqualEqual.to_string() {
-                    return self.make_builtin(&name, "q", "r", |_, a, b| a._eq(b).into());
+                    return self.make_builtin(&name, "q", "r", |c, a, b| c.eq(a, b));
                 } else if definition.name == Token::NotEqual.to_string() {
-                    return self.make_builtin(&name, "s", "t", |c, a, b| z3::Ast::distinct(c, &[&a.to_owned().into(), &b.to_owned().into()]).into());
+                    return self.make_builtin(&name, "s", "t", |c, a, b| c.neq(a, b));
                 }
             },
             _ => (),
@@ -417,17 +406,14 @@ impl<'c> RefinementContext<'c> {
     }
 
     fn make_builtin<F>(&self, name: &str, param1: &str, param2: &str, f: F) -> Option<Refinements<'c>>
-        where F: FnOnce(z3::Context, &z3::Ast, &z3::Ast) -> z3::Ast
+        where F: FnOnce(z3::Context, z3::Ast, z3::Ast) -> z3::Ast
     {
-        let a = Int::new_const(self.z3_context, param1);
-        let b = Int::new_const(self.z3_context, param2);
-        let body = f(self.z3_context, &a, &b);
-        let arg_sort = self.z3_context.get_sort(a);
-        let ret_sort = self.z3_context.get_sort(body);
+        let int_sort = self.z3_context.int_sort();
+        let a = self.z3_context.mk_const(param1, int_sort);
+        let b = self.z3_context.mk_const(param2, int_sort);
+        let body = f(self.z3_context, a, b);
 
-        let (a, b) = (a.into(), b.into());
-        let f = z3::FuncDecl::new_recursive(self.z3_context, name, &[&arg_sort, &arg_sort], &ret_sort);
-        f.set_body(&[&a, &b], &body.into());
+        let f = self.z3_context.define_function(name, &mut [a, b], body);
         return Some(Refinements::function(f, vec![a, b]));
     }
 
@@ -437,7 +423,7 @@ impl<'c> RefinementContext<'c> {
 
             // Don't print any names from the prelude
             if info.location.filename != cache.prelude_path {
-                let refinements = indent(&refinements.to_string(), 4, false);
+                let refinements = indent(&refinements.to_string(self.z3_context), 4, false);
                 println!("{} = {}", info.name, refinements);
             }
         }

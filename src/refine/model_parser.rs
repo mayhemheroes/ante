@@ -12,11 +12,12 @@ impl<'c> RefinementContext<'c> {
     {
         // Write the assert to a sexpr string, parse the string, then pretty-print it into
         // infix form
-        let (sexpr, variables, _) = parse_sexpr(&assert.to_string()).unwrap();
+        let sexpr = self.z3_context.ast_to_string(assert);
+        let (sexpr, variables, _) = parse_sexpr(&sexpr).unwrap();
         let assert = format!("`{}`", sexpr_to_string(&sexpr, cache));
 
         let definitions = variables.into_iter()
-            .filter_map(|variable| self.get_z3_definition(variable, &model, cache))
+            .filter_map(|variable| self.get_z3_definition(variable, model, cache))
             .collect::<Vec<String>>()
             .join(", ");
 
@@ -30,7 +31,7 @@ impl<'c> RefinementContext<'c> {
         note!(origin, "Refinement arises from condition here");
     }
 
-    fn get_z3_definition(&mut self, id: DefinitionInfoId, model: &z3::Model, cache: &ModuleCache<'c>) -> Option<String> {
+    fn get_z3_definition(&mut self, id: DefinitionInfoId, model: z3::Model, cache: &ModuleCache<'c>) -> Option<String> {
         let info = &cache.definition_infos[id.0];
         let name = format!("{}${}", info.name, id.0);
         let typ = cache.follow_bindings(info.typ.as_ref().unwrap());
@@ -43,8 +44,10 @@ impl<'c> RefinementContext<'c> {
 
         let sort = self.type_to_sort(&typ, cache);
         let var = self.variable(&name, sort);
-        model.eval(&var)
-            .map(|value| format!("{} = {}", info.name, z3_expr_to_string(&value, cache)))
+        self.z3_context.eval(model, var).map(|value| {
+            let expr = z3_expr_to_string(self.z3_context, value, cache);
+            format!("{} = {}", info.name, expr)
+        })
     }
 }
 
@@ -62,8 +65,9 @@ fn is_function(typ: &crate::types::Type) -> bool {
     }
 }
 
-fn z3_expr_to_string<'c>(expr: z3::Ast, cache: &ModuleCache<'c>) -> String {
-    let (sexpr, _, _) = parse_sexpr(&expr.to_string()).unwrap();
+fn z3_expr_to_string<'c>(context: z3::Context, expr: z3::Ast, cache: &ModuleCache<'c>) -> String {
+    let sexpr = context.ast_to_string(expr);
+    let (sexpr, _, _) = parse_sexpr(&sexpr).unwrap();
     sexpr_to_string(&sexpr, cache)
 }
 

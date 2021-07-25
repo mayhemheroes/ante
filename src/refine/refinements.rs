@@ -118,11 +118,11 @@ impl<'c> Refinements<'c> {
         self
     }
 
-    pub fn bind_to(self, other: Self) -> Self {
+    pub fn bind_to(self, other: Self, context: z3::Context) -> Self {
         self.combine_with(other, |mut this, other_value| {
             if let RefinementValue::Pure(value) = this.value {
-                if let RefinementValue::Pure(other_value) = &other_value {
-                    let eq = value._eq(other_value);
+                if let RefinementValue::Pure(other_value) = other_value {
+                    let eq = context.eq(value, other_value);
                     this.bindings.push(eq);
                 }
             }
@@ -134,15 +134,17 @@ impl<'c> Refinements<'c> {
 
     /// Map all the asserts in other, returning a new Vec of
     /// asserts in the form (=> self.value other.assert)
-    pub fn implies(&self, other: Self) -> (Asserts<'c>, Bindings) {
-        match &self.value {
+    pub fn implies(&self, other: Self, context: z3::Context) -> (Asserts<'c>, Bindings) {
+        match self.value {
             RefinementValue::Pure(value) => {
-                let cond = value.as_bool().unwrap();
-                let asserts = fmap(&other.asserts, |assert| (cond.implies(&assert.0), assert.1, assert.2));
+                let asserts = fmap(&other.asserts, |assert| {
+                    let implies = context.implies(value, assert.0);
+                    (implies, assert.1, assert.2)
+                });
                 (asserts, other.bindings)
             },
             _ => {
-                println!("Self value isn't pure, its: {}", self);
+                println!("Self value isn't pure, its: {}", self.to_string(context));
                 (other.asserts, other.bindings)
             },
         }
@@ -151,60 +153,65 @@ impl<'c> Refinements<'c> {
     pub fn try_add_assert(mut self, assert: Option<Self>, location: Location<'c>) -> Self {
         if let Some(assert) = assert {
             let assert_value = assert.get_value().unwrap();
-            let assert_value = assert_value.as_bool().unwrap();
             self.asserts.push((assert_value, location, location));
         }
         self
     }
 
-    pub fn substitute(mut self, replacements: Vec<(&z3::Ast, Self)>, callsite: Location<'c>) -> Self {
+    pub fn substitute(mut self, replacements: Vec<(&z3::Ast, Self)>, callsite: Location<'c>, context: z3::Context) -> Self {
         let mut all_asserts = vec![];
         let mut all_bindings = vec![];
-        let mut substitutions = vec![];
+
+        let mut substitute_from = vec![];
+        let mut substitute_to = vec![];
 
         for (pattern, mut refinement) in replacements {
             all_asserts.append(&mut refinement.asserts);
             all_bindings.append(&mut refinement.bindings);
 
             match refinement.value {
-                RefinementValue::Pure(value) => substitutions.push((pattern, value)),
+                RefinementValue::Pure(value) => {
+                    substitute_from.push(*pattern);
+                    substitute_to.push(value);
+                },
                 _ => (),
             }
         }
 
-        let substitutions: Vec<_> = substitutions.iter().map(|sub| (sub.0, &sub.1)).collect();
-        self.value = self.value.substitute(&substitutions);
-        self.asserts = fmap(&self.asserts, |assert| (assert.0.substitute(&substitutions), callsite, assert.2));
-        self.bindings = fmap(&self.bindings, |binding| binding.substitute(&substitutions));
+        self.value = self.value.substitute(&substitute_from, &substitute_to, context);
+        self.bindings = fmap(&self.bindings, |binding| context.substitute(*binding, &substitute_from, &substitute_to));
+        self.asserts = fmap(&self.asserts, |assert| {
+            let condition = context.substitute(assert.0, &substitute_from, &substitute_to);
+            (condition, callsite, assert.2)
+        });
 
         self.asserts.append(&mut all_asserts);
         self.bindings.append(&mut all_bindings);
         self
     }
-}
 
-impl<'c> std::fmt::Display for Refinements<'c> {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "Value: {}", self.value)?;
-        let asserts = self.asserts.iter().map(|assert| &assert.0).collect::<Vec<_>>();
+    pub fn to_string(&self, context: z3::Context) -> String {
+        let mut ret = format!("Value: {}", self.value.to_string(context));
+        let asserts = fmap(&self.asserts, |assert| context.ast_to_string(assert.0));
+        let bindings = fmap(&self.bindings, |binding| context.ast_to_string(*binding));
 
-        if self.asserts.len() == 1 {
+        if asserts.len() == 1 {
             let asserts = join_with(&asserts, "\n");
-            write!(f, "\nAsserts: {}", asserts)?;
+            ret += &format!("\nAsserts: {}", asserts);
         } else if asserts.len() > 1 {
             let asserts = join_with(&asserts, "\n");
-            write!(f, "\nAsserts:\n{}", asserts)?;
+            ret += &format!("\nAsserts:\n{}", asserts);
         }
 
-        if self.bindings.len() == 1 {
-            let bindings = join_with(&self.bindings, "\n");
-            write!(f, "\nBindings: {}", bindings)?;
-        } else if self.bindings.len() > 1 {
-            let bindings = join_with(&self.bindings, "\n");
-            write!(f, "\nBindings:\n{}", bindings)?;
+        if bindings.len() == 1 {
+            let bindings = join_with(&bindings, "\n");
+            ret += &format!("\nBindings: {}", bindings);
+        } else if bindings.len() > 1 {
+            let bindings = join_with(&bindings, "\n");
+            ret += &format!("\nBindings:\n{}", bindings);
         }
 
-        Ok(())
+        ret
     }
 }
 
@@ -223,29 +230,28 @@ impl RefinementValue {
         }
     }
 
-    pub fn substitute(self, replacements: &[(&z3::Ast, &z3::Ast)]) -> RefinementValue {
+    pub fn substitute(self, substitute_from: &[z3::Ast], substitute_to: &[z3::Ast], context: z3::Context) -> RefinementValue {
         use RefinementValue::*;
         match self {
-            Pure(ast) => Pure(ast.substitute(replacements)),
+            Pure(ast) => Pure(context.substitute(ast, substitute_from, substitute_to)),
             Function(f) => {
-                let args = fmap(&f.1, |arg| arg.substitute(replacements));
-                let arg_refs: Vec<_> = args.iter().collect();
-                Pure(f.0.apply(&arg_refs))
+                let args = fmap(&f.1, |arg| context.substitute(*arg, substitute_from, substitute_to));
+                Pure(context.apply(f.0, &args))
             },
             Impure => Impure,
         }
     }
-}
 
-impl std::fmt::Display for RefinementValue {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    pub fn to_string(&self, context: z3::Context) -> String {
         match self {
-            RefinementValue::Pure(ast) => write!(f, "{}", ast),
+            RefinementValue::Pure(ast) => context.ast_to_string(*ast),
             RefinementValue::Function(fd) => {
-                let params = join_with(&fd.1, " ");
-                write!(f, "fn {} -> {}", params, fd.0)
+                let func = context.func_decl_to_string(fd.0);
+                let params = fmap(&fd.1, |param| context.ast_to_string(*param));
+                let params = join_with(&params, " ");
+                format!("fn {} -> {}", params, func)
             },
-            RefinementValue::Impure => write!(f, "Impure"),
+            RefinementValue::Impure => "Impure".to_string(),
         }
     }
 }

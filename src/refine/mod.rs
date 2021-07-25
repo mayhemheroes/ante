@@ -33,7 +33,7 @@ pub fn refine<'c>(ast: &ast::Ast<'c>, output_refinements: bool, cache: &ModuleCa
             },
             z3::SatResult::Unsat => {},
             z3::SatResult::Unknown(reason) => {
-                error!(assert.1, "error while solving {}: {}", context.z3_context.display(assert.0), reason);
+                error!(assert.1, "error while solving {}: {}", context.z3_context.ast_to_string(assert.0), reason);
             }
         }
         context.solver.pop();
@@ -105,9 +105,9 @@ impl<'c> Refineable<'c> for ast::FunctionCall<'c> {
 
         match &f.value {
             RefinementValue::Function(func) => {
-                let func = func.1.clone();
-                let replacements: Vec<_> = func.iter().zip(args).collect();
-                f.substitute(replacements, self.location)
+                let params = func.1.clone();
+                let replacements: Vec<_> = params.iter().zip(args).collect();
+                f.substitute(replacements, self.location, context.z3_context)
             },
             _ => {
                 let args = Refinements::combine_all(args.into_iter());
@@ -144,13 +144,13 @@ impl<'c> Refineable<'c> for ast::If<'c> {
         let cond = self.condition.refine(context, cache);
         let then = self.then.refine(context, cache);
 
-        let (mut asserts, mut bindings) = cond.implies(then);
+        let (mut asserts, mut bindings) = cond.implies(then, context.z3_context);
 
         if let Some(otherwise) = self.otherwise.as_ref() {
             let otherwise = otherwise.refine(context, cache);
 
             let not = cond.map_value(|cond| context.z3_context.not(cond));
-            let mut otherwise = not.implies(otherwise);
+            let mut otherwise = not.implies(otherwise, context.z3_context);
 
             asserts.append(&mut otherwise.0);
             bindings.append(&mut otherwise.1);
@@ -173,9 +173,9 @@ impl<'c> Refineable<'c> for ast::Match<'c> {
             let pattern = pattern.refine(context, cache);
             let branch = branch.refine(context, cache);
 
-            match (pattern.value, match_expr.value) {
+            match (&pattern.value, &match_expr.value) {
                 (RefinementValue::Pure(pattern_value), RefinementValue::Pure(value)) => {
-                    let eq = context.z3_context.eq(value, pattern_value);
+                    let eq = context.z3_context.eq(*value, *pattern_value);
                     previous_cases.push(eq.clone());
 
                     let ret = if previous_cases.len() == 1 {
@@ -190,7 +190,7 @@ impl<'c> Refineable<'c> for ast::Match<'c> {
                     previous_cases.pop();
                     previous_cases.push(context.z3_context.not(eq));
 
-                    let mut branch_matched = pattern_matches.implies(branch);
+                    let mut branch_matched = pattern_matches.implies(branch, context.z3_context);
                     asserts.append(&mut branch_matched.0);
                     bindings.append(&mut branch_matched.1);
                 },
