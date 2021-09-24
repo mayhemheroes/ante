@@ -39,12 +39,12 @@
 use crate::parser::{ self, ast, ast::Ast };
 use crate::types::{ TypeInfoId, TypeVariableId, Type, PrimitiveType,
                     TypeInfoBody, TypeConstructor, Field, LetBindingLevel,
-                    INITIAL_LEVEL, STRING_TYPE };
+                    FunctionType, INITIAL_LEVEL, STRING_TYPE };
 use crate::types::traits::RequiredTrait;
 use crate::error::{ self, location::{ Location, Locatable } };
 use crate::cache::{ ModuleCache, DefinitionInfoId, ModuleId };
 use crate::cache::{ TraitInfoId, ImplInfoId, DefinitionKind };
-use crate::nameresolution::scope::Scope;
+use crate::nameresolution::scope::{ Scope, FunctionScopes };
 use crate::lexer::{ Lexer, token::Token };
 use crate::util::{ fmap, trustme, timing };
 
@@ -83,7 +83,7 @@ pub enum NameResolutionState {
 pub struct NameResolver {
     filepath: PathBuf,
 
-    /// The stack of functions we are currently compiling.
+    /// The stack of functions scopes we are currently compiling.
     /// Since we do not follow function calls, we are only inside multiple
     /// functions when their definitions are nested, e.g. in:
     ///
@@ -92,7 +92,7 @@ pub struct NameResolver {
     ///     bar () + 2
     ///
     /// Our callstack would consist of [main/global scope, foo, bar]
-    scopes: Vec<Scope>,
+    scopes: Vec<FunctionScopes>,
 
     /// Contains all the publically exported symbols of the current module.
     /// The purpose of the 'declare' pass is to fill this field out for
@@ -157,7 +157,8 @@ impl PartialEq for NameResolver {
 macro_rules! lookup_fn {
     ( $name:ident , $stack_field:ident , $cache_field:ident, $return_type:ty ) => {
         fn $name<'c>(&self, name: &str, cache: &mut ModuleCache<'c>) -> Option<$return_type> {
-            for stack in self.scopes.iter().rev() {
+            let function_scope = self.scopes.last().unwrap();
+            for stack in function_scope.iter().rev() {
                 if let Some(id) = stack.$stack_field.get(name) {
                     cache.$cache_field[id.0].uses += 1;
                     return Some(*id);
@@ -176,9 +177,98 @@ macro_rules! lookup_fn {
 }
 
 impl NameResolver {
-    lookup_fn!(lookup_definition, definitions, definition_infos, DefinitionInfoId);
+    // lookup_fn!(lookup_definition, definitions, definition_infos, DefinitionInfoId);
     lookup_fn!(lookup_type, types, type_infos, TypeInfoId);
     lookup_fn!(lookup_trait, traits, trait_infos, TraitInfoId);
+
+    /// Similar to the lookup functions above, but will also lookup variables that are
+    /// defined in a parent function to keep track of which variables closures
+    /// will need in their environment.
+    fn reference_definition<'c>(&mut self, name: &str, location: Location<'c>, cache: &mut ModuleCache<'c>) -> Option<DefinitionInfoId> {
+        let current_function_scope = self.scopes.last().unwrap();
+
+        for stack in current_function_scope.iter().rev() {
+            if let Some(&id) = stack.definitions.get(name) {
+                cache.definition_infos[id.0].uses += 1;
+                return Some(id);
+            }
+        }
+
+        // If name wasn't found yet, try any parent function scopes.
+        // If we find it here, also mark the current lambda as a closure.
+        let range = 1 .. std::cmp::max(1, self.scopes.len() - 1);
+
+        for function_scope_index in range.rev() {
+            let function_scope = &self.scopes[function_scope_index];
+
+            for stack in function_scope.iter().rev() {
+                if let Some(&from) = stack.definitions.get(name) {
+                    return Some(self.create_closure(from, name, function_scope_index, location, cache));
+                }
+            }
+        }
+
+        // Otherwise, check globals/imports
+        if let Some(id) = self.global_scope().definitions.get(name) {
+            cache.definition_infos[id.0].uses += 1;
+            return Some(*id);
+        }
+
+        None
+    }
+
+    /// Adds a given environment variable (along with its name and the self.scopes index of the function it
+    /// was found in) to a function, thus marking that function as being a closure. This works by
+    /// creating a new parameter in the current function and creating a mapping between the
+    /// environment variable and that parameter slot so that codegen will know to automatically
+    /// pass in the required environment variable(s).
+    ///
+    /// This also handles the case of transitive closures. When we add an environment variable to
+    /// a closure, we may also need to create more closures along the way to be able to thread
+    /// through our environment variables to reach any closures within other closures.
+    fn create_closure<'c>(&mut self, mut environment: DefinitionInfoId, environment_name: &str,
+        environment_function_index: usize, location: Location<'c>, cache: &mut ModuleCache<'c>) -> DefinitionInfoId
+    {
+        let mut ret = None;
+        cache.definition_infos[environment.0].uses += 1;
+
+        // Traverse through each function from where the environment variable is defined
+        // to the closure that uses it, and add the environment variable to each closure.
+        // Usually, this is only one function but in cases like
+        //
+        // x = 2
+        // fn _ -> fn _ -> x
+        //
+        // we have to traverse multiple functions, marking them all as closures along
+        // the way while adding `x` as a parameter to each.
+        for origin_fn in environment_function_index .. self.scopes.len() - 1 {
+            let next_fn = origin_fn + 1;
+
+            let to = self.add_closure_parameter_definition(environment_name, next_fn, location, cache);
+            self.scopes[next_fn].add_closure_environment_variable_mapping(environment, to);
+            environment = to;
+            ret = Some(to);
+        }
+
+        ret.unwrap()
+    }
+
+    fn add_closure_parameter_definition<'c>(&mut self, parameter: &str, function_scope_index: usize,
+        location: Location<'c>, cache: &mut ModuleCache<'c>) -> DefinitionInfoId
+    {
+        let function_scope = &mut self.scopes[function_scope_index];
+        let scope = function_scope.first_mut();
+
+        // TODO: set this to true for mutable closure parameters
+        let id = cache.push_definition(parameter, false, location);
+        cache.definition_infos[id.0].definition = Some(DefinitionKind::Parameter);
+        cache.definition_infos[id.0].uses = 1;
+
+        let existing = scope.definitions.insert(parameter.to_string(), id);
+        assert!(existing.is_none());
+
+        id
+    }
 
     fn lookup_type_variable(&self, name: &str) -> Option<TypeVariableId> {
         for scope in self.type_variable_scopes.iter().rev() {
@@ -191,17 +281,22 @@ impl NameResolver {
     }
 
     fn push_scope(&mut self, cache: &mut ModuleCache) {
-        self.scopes.push(Scope::new(cache));
+        self.function_scopes().push_new_scope(cache);
         let impl_scope = self.current_scope().impl_scope;
 
         // TODO optimization: this really shouldn't be necessary to copy all the
         // trait impl ids for each scope just so Variables can store their scope
         // for the type checker to do trait resolution.
-        for scope in self.scopes.iter().rev() {
+        for scope in self.scopes[0].iter().rev() {
             for (_, impls) in scope.impls.iter() {
                 cache.impl_scopes[impl_scope.0].append(&mut impls.clone());
             }
         }
+    }
+
+    fn push_lambda<'c>(&mut self, lambda: &mut ast::Lambda<'c>, cache: &mut ModuleCache<'c>) {
+        self.scopes.push(FunctionScopes::from_lambda(lambda));
+        self.push_scope(cache);
     }
 
     fn push_type_variable_scope(&mut self) {
@@ -222,6 +317,11 @@ impl NameResolver {
         if warn_unused {
             self.current_scope().check_for_unused_definitions(cache);
         }
+        self.function_scopes().pop();
+    }
+
+    fn pop_lambda<'c>(&mut self, cache: &mut ModuleCache<'c>) {
+        self.pop_scope(cache, true);
         self.scopes.pop();
     }
 
@@ -229,13 +329,17 @@ impl NameResolver {
         self.type_variable_scopes.pop();
     }
 
+    fn function_scopes(&mut self) -> &mut FunctionScopes {
+        self.scopes.last_mut().unwrap()
+    }
+
     fn current_scope(&mut self) -> &mut Scope {
-        let top = self.scopes.len() - 1;
-        &mut self.scopes[top]
+        let function_scopes = self.function_scopes();
+        function_scopes.last_mut()
     }
 
     fn global_scope(&self) -> &Scope {
-        &self.scopes[0]
+        self.scopes[0].first()
     }
 
     fn in_global_scope(&self) -> bool {
@@ -399,7 +503,7 @@ impl<'c> NameResolver {
 
         let mut resolver = NameResolver {
             filepath: filepath.to_owned(),
-            scopes: vec![],
+            scopes: vec![FunctionScopes::new()],
             exports: Scope::new(cache),
             type_variable_scopes: vec![scope::TypeVariableScope::default()],
             state: NameResolutionState::DeclareInProgress,
@@ -450,12 +554,15 @@ impl<'c> NameResolver {
             ast::Type::FloatType(_) => Type::Primitive(PrimitiveType::FloatType),
             ast::Type::CharType(_) => Type::Primitive(PrimitiveType::CharType),
             ast::Type::StringType(_) => Type::UserDefinedType(STRING_TYPE),
+            ast::Type::PointerType(_) => Type::Primitive(PrimitiveType::PtrType),
             ast::Type::BooleanType(_) => Type::Primitive(PrimitiveType::BooleanType),
             ast::Type::UnitType(_) => Type::Primitive(PrimitiveType::UnitType),
-            ast::Type::FunctionType(args, ret, varargs, _) => {
-                let args = fmap(args, |arg| self.convert_type(cache, arg));
-                let ret = self.convert_type(cache, ret);
-                Type::Function(args, Box::new(ret), *varargs)
+            ast::Type::FunctionType(args, ret, is_varargs, _) => {
+                let parameters = fmap(args, |arg| self.convert_type(cache, arg));
+                let return_type = Box::new(self.convert_type(cache, ret));
+                let environment = Box::new(Type::Primitive(PrimitiveType::UnitType));
+                let is_varargs = *is_varargs;
+                Type::Function(FunctionType { parameters, return_type, environment, is_varargs })
             },
             ast::Type::TypeVariable(name, location) => {
                 match self.lookup_type_variable(name) {
@@ -632,7 +739,7 @@ impl<'c> Resolvable<'c> for ast::Variable<'c> {
                 resolver.definitions_collected.push(id);
                 self.definition = Some(id);
             } else {
-                self.definition = resolver.lookup_definition(name, cache);
+                self.definition = resolver.reference_definition(name, self.location, cache);
             }
 
             self.id = Some(cache.push_variable_node(name));
@@ -655,7 +762,7 @@ impl<'c> Resolvable<'c> for ast::Variable<'c> {
 
                 self.id = Some(cache.push_variable_node(name));
                 self.impl_scope = Some(resolver.current_scope().impl_scope);
-                self.definition = resolver.lookup_definition(name, cache);
+                self.definition = resolver.reference_definition(name, self.location, cache);
 
                 // TODO: optimization - it would be faster and save more space if we only had
                 // to push trait binding IDs for variables that actually need trait bindings.
@@ -676,7 +783,7 @@ impl<'c> Resolvable<'c> for ast::Lambda<'c> {
     fn declare(&mut self, _resolver: &mut NameResolver, _cache: &mut ModuleCache<'c>) { }
 
     fn define(&mut self, resolver: &mut NameResolver, cache: &mut ModuleCache<'c>) {
-        resolver.push_scope(cache);
+        resolver.push_lambda(self, cache);
         resolver.resolve_all_definitions(self.args.iter_mut(), cache, || DefinitionKind::Parameter);
 
         if let Some(given) = self.given.as_mut() {
@@ -684,7 +791,7 @@ impl<'c> Resolvable<'c> for ast::Lambda<'c> {
         }
 
         self.body.define(resolver, cache);
-        resolver.pop_scope(cache, true);
+        resolver.pop_lambda(cache);
     }
 }
 
@@ -782,7 +889,12 @@ pub fn create_variant_constructor_type<'c>(parent_type_id: TypeInfoId, args: Vec
 
     // Create the arguments to the function type if this type has arguments
     if !args.is_empty() {
-        result = Type::Function(args, Box::new(result), false);
+        result = Type::Function(FunctionType {
+            parameters: args,
+            return_type: Box::new(result),
+            environment: Box::new(Type::Primitive(PrimitiveType::UnitType)),
+            is_varargs: false
+        });
     }
 
     // finally, wrap the type in a forall if it has type variables
@@ -802,8 +914,8 @@ fn create_variants<'c>(vec: &Variants<'c>, parent_type_id: TypeInfoId,
         resolver: &mut NameResolver, cache: &mut ModuleCache<'c>) -> Vec<TypeConstructor<'c>> {
 
     let mut index = 0;
-    fmap(&vec, |(name, types, location)| {
-        let args = fmap(&types, |t| resolver.convert_type(cache, t));
+    fmap(vec, |(name, types, location)| {
+        let args = fmap(types, |t| resolver.convert_type(cache, t));
 
         let id = resolver.push_definition(&name, false, cache, *location);
         cache.definition_infos[id.0].typ = Some(create_variant_constructor_type(parent_type_id, args.clone(), cache));
@@ -817,7 +929,7 @@ type Fields<'c> = Vec<(String, ast::Type<'c>, Location<'c>)>;
 
 fn create_fields<'c>(vec: &Fields<'c>, resolver: &mut NameResolver, cache: &mut ModuleCache<'c>) -> Vec<Field<'c>> {
 
-    fmap(&vec, |(name, field_type, location)| {
+    fmap(vec, |(name, field_type, location)| {
         let field_type = resolver.convert_type(cache, field_type);
 
         Field { name: name.clone(), field_type, location: *location }

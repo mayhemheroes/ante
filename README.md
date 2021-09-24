@@ -1,74 +1,61 @@
 # Ante
 
-[![Travis (.org)](https://img.shields.io/travis/jfecher/ante)](https://travis-ci.org/github/jfecher/ante)
+[![Build Status](https://img.shields.io/endpoint.svg?url=https%3A%2F%2Factions-badge.atrox.dev%2Fjfecher%2Fante%2Fbadge&style=flat)](https://actions-badge.atrox.dev/jfecher/ante/goto)
 
 ---
 
-Ante is a low-level mostly functional programming language targetted
-at gamedev but is still applicable for most domains. Ante aims to
-make it easier to write faster, safer code through region-based
-memory management and refinement types.
+Ante is a low-level functional language for exploring refinement types, lifetime inference, and
+other fun features. Here's a quick taste:
 
 ```scala
-type Person =
-    job: string
-    name: ref string
+type Person = name: string, job: ref string
 
-// Ante uses region inference to infer the data referenced
-// via `&` should not be freed inside this function
-make_person job =
-    Person job &"bob"
+// Infer that the data referenced via `&` should not be freed inside this function
+make_person name =
+    Person name &"programmer"
 
-// bob is only used at this scope, so we can allocate it on the stack
-// here and pass this location to make_person to fill in the value "bob"
-bob = make_person "programmer"
+// bob is only used at this scope, so it can be safely freed afterward
+bob = make_person "bob"
 
-// unlike ownership systems, aliasing is allowed in region inference
+// unlike ownership systems, aliasing is allowed with lifetime inference
 bob_twin = bob
 assert (bob.name == bob_twin.name)
 ```
 
 In general, ante is low-level (no GC, values aren't boxed by default) while also trying to
-be as easy as possible by allowing these details to be gradually introduced into a codebase so that
-developers can spend more time adding new features. This is accomplished primarily through region inference,
-which automatically infers the lifetime of pointers and ensures you will never run into a use-after-free,
-double-free, or forget-to-free unless you explicitly opt-out by using a different pointer type. Moreover,
-because lifetimes are completely inferred, you don't have to be aware of them while programming, making ante
-approachable even for developers used to garbage-collected languages. Memory within a region is often
-allocated on the stack, resembling destination passing style in C.
+be as readable as possible by encouraging high-level approaches that can be optimized with
+low-level details later on.
 
-See the [language tour](https://antelang.org/docs/language/) for more information.
+See the [website](https://antelang.org) and [language tour](https://antelang.org/docs/language/) for more information.
 
 ---
 
-### Features/Roadmap
+### Roadmap
 
 - [x] Whitespace-sensitive lexer
 - [x] Parser
 - [x] Name Resolution
 - [x] Full type inference
-    - [x] Traits with multiple parameters and a limited (friendlier) form of functional dependencies
-    - [ ] Write untyped code and have the compiler write in the types for you after a successful compilation
+    - [x] Traits with multiple parameters and limited functional dependencies
+    - [ ] Compiler option to write inferred types into program source after successful compilation
 - [x] LLVM Codegen
 - [x] No Garbage Collector
-    - [ ] Region-based deterministic memory management with region inference
-        - Easily write safe code without memory leaks all while having it compiled into
-          fast pointer-bump allocators or even allocated on the stack for small regions.
-    - [ ] Opt-out of region inference by using a different pointer type
-          like `Rc t` or `Box t` to get reference-counted or uniquely owned pointer semantics
+    - [ ] Region Inference for `ref`s
+    - [ ] RAII to allow `Rc t` or `Box t` when necessary
 - [x] Language [Documentation](https://antelang.org/docs/language/):
     - [x] [Article on Ante's use of whitespace for line continuations](https://antelang.org/docs/language/#line-continuations)
+    - [x] [Article on the sugar for immediately invoked recursive functions (loop/recur)](https://antelang.org/docs/language/#loops)
     - [ ] Article on interactions between `mut`, `ref`, and passing by reference
-    - [ ] Article on autoboxing for recursive types
+    - [ ] Article on autoboxing recursive types for polymorphic pointer types
 - [ ] Refinement Types
+- [ ] Cranelift backend for faster debug builds
+- [ ] Incremental compilation metadata
 - [ ] REPL
-- [ ] Loops
 
 Nice to have but not currently required:
-- [ ] Multiple backends, possibly GCCJIT/cranelift for faster debug builds
-- [ ] Reasonable C/C++ interop with clang api
+- [ ] Reasonable automatic C/C++ interop with clang api
 - [ ] Build system built into standard library
-    - Ante should always be able to build itself along with any required libraries, the main question is how should a build system interact facilitate the more complex tasks of building other languages or running arbitrary programs like yacc/bison.
+    - Ante should always be able to build itself along with any required libraries, the main question is how should a build system facilitate the more complex tasks of building other languages or running arbitrary programs like yacc/bison.
 
 ---
 
@@ -86,8 +73,8 @@ in them which the [goldentests](https://github.com/jfecher/golden-tests) library
 to run the ante compiler and check its output for each file against the expected output
 contained within comments of that file.
 
-Quick Tasks:
-- [ ] Add support for explicit currying via `_` ([#66](https://github.com/jfecher/ante/issues/66))
+[**Quick Tasks**](https://github.com/jfecher/ante/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+to contribute to
 
 ---
 
@@ -101,7 +88,7 @@ than development updates.
 
 ### Building
 
-Ante currently requires llvm 10.0 while building. If you already have this installed with
+Ante currently requires llvm 12.0 while building. If you already have this installed with
 sources, you may be fine building with `cargo build` alone. If `cargo build` complains
 about not finding any suitable llvm version, the easiest way to build llvm is through `llvmenv`.
 In that case, you can build from source using the following:
@@ -109,8 +96,8 @@ In that case, you can build from source using the following:
 ```bash
 $ cargo install llvmenv
 $ llvmenv init
-$ llvmenv build-entry -G Makefile -j7 10.0.0
-$ llvmenv global 10.0.0
+$ llvmenv build-entry -G Makefile -j7 12.0.1
+$ llvmenv global 12.0.1
 $ LLVM_SYS_100_PREFIX=$(llvmenv prefix)
 $ cargo build
 ```
@@ -120,8 +107,8 @@ or on windows:
 ```shell
 $ cargo install llvmenv
 $ llvmenv init
-$ llvmenv build-entry -G VisualStudio -j7 10.0.0
-$ llvmenv global 10.0.0
+$ llvmenv build-entry -G VisualStudio -j7 12.0.1
+$ llvmenv global 12.0.1
 $ for /f "tokens=*" %a in ('llvmenv prefix') do (set LLVM_SYS_100_PREFIX=%a)
 $ cargo build
 ```

@@ -42,17 +42,19 @@ impl<'a> Display for ast::Variable<'a> {
 
 impl<'a> Display for ast::Lambda<'a> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "(\\")?;
+        write!(f, "(fn")?;
         for arg in self.args.iter() {
             write!(f, " {}", arg)?;
         }
         if let Some(typ) = &self.return_type {
-            write!(f, " -> {}", typ)?;
+            write!(f, " : {}", typ)?;
         }
+
         if let Some(given) = self.given.as_ref() {
             write!(f, " given {}", given)?;
         }
-        write!(f, " . {})", self.body)
+
+        write!(f, " -> {})", self.body)
     }
 }
 
@@ -96,6 +98,7 @@ impl<'a> Display for ast::Type<'a> {
             FloatType(_) => write!(f, "float"),
             CharType(_) => write!(f, "char"),
             StringType(_) => write!(f, "string"),
+            PointerType(_) => write!(f, "Ptr"),
             BooleanType(_) => write!(f, "bool"),
             UnitType(_) => write!(f, "unit"),
             ReferenceType(_) => write!(f, "ref"),
@@ -127,7 +130,7 @@ impl<'a> Display for ast::TypeDefinitionBody<'a> {
                 Ok(())
             },
             StructOf(types) => {
-                let types = fmap(&types, |(name, ty, _)| format!("{}: {}", name, ty));
+                let types = fmap(types, |(name, ty, _)| format!("{}: {}", name, ty));
                 write!(f, "{}", types.join(", "))
             },
             AliasOf(alias) => write!(f, "{}", alias),

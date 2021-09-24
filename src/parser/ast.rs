@@ -31,6 +31,7 @@ use crate::cache::{ DefinitionInfoId, TraitInfoId, ModuleId, ImplScopeId, TraitB
 use crate::types::{ self, TypeInfoId, LetBindingLevel };
 use crate::types::pattern::DecisionTree;
 use crate::util::reinterpret_as_bits;
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Eq, Hash, PartialOrd, Ord)]
 pub enum LiteralKind {
@@ -92,6 +93,12 @@ pub struct Lambda<'a> {
     pub body: Box<Ast<'a>>,
     pub return_type: Option<Type<'a>>,
     pub given: Option<Box<Ast<'a>>>,
+
+    /// Maps DefinitionInfoIds closed over in the environment to their new
+    /// IDs within the closure which shadow their previous definition.
+    /// Needed because closure environment variables are converted to
+    /// parameters of the function which need separate IDs.
+    pub closure_environment: BTreeMap<DefinitionInfoId, DefinitionInfoId>,
     pub location: Location<'a>,
     pub typ: Option<types::Type>,
 }
@@ -164,6 +171,7 @@ pub enum Type<'a> {
     FloatType(Location<'a>),
     CharType(Location<'a>),
     StringType(Location<'a>),
+    PointerType(Location<'a>),
     BooleanType(Location<'a>),
     UnitType(Location<'a>),
     ReferenceType(Location<'a>),
@@ -351,6 +359,32 @@ impl PartialEq for LiteralKind {
 
 /// These are all convenience functions for creating various Ast nodes from the parser
 impl<'a> Ast<'a> {
+    pub fn get_operator(self) -> Option<Token> {
+        match self {
+            Ast::Variable(variable) => {
+                match variable.kind {
+                    VariableKind::Operator(token) => Some(token),
+                    _ => None,
+                }
+            },
+            _ => None,
+        }
+    }
+
+    /// True if this variable can be matched on, ie. it
+    /// is both a Variable node and is not a VariableKind::TypeConstructor
+    fn is_matchable_variable(&self) -> bool {
+        match self {
+            Ast::Variable(variable) => {
+                match variable.kind {
+                    VariableKind::TypeConstructor(..) => false,
+                    _ => true,
+                }
+            },
+            _ => false,
+        }
+    }
+
     pub fn integer(x: u64, kind: IntegerKind, location: Location<'a>) -> Ast<'a> {
         Ast::Literal(Literal { kind: LiteralKind::Integer(x, kind), location, typ: None })
     }
@@ -389,7 +423,7 @@ impl<'a> Ast<'a> {
 
     pub fn lambda(args: Vec<Ast<'a>>, return_type: Option<Type<'a>>, body: Ast<'a>, given: Option<Ast<'a>>, location: Location<'a>) -> Ast<'a> {
         assert!(!args.is_empty());
-        Ast::Lambda(Lambda { args, body: Box::new(body), return_type, location, given: given.map(Box::new), typ: None })
+        Ast::Lambda(Lambda { args, body: Box::new(body), closure_environment: BTreeMap::new(), given: given.map(Box::new), return_type, location, typ: None })
     }
 
     pub fn function_call(function: Ast<'a>, args: Vec<Ast<'a>>, location: Location<'a>) -> Ast<'a> {
@@ -401,8 +435,26 @@ impl<'a> Ast<'a> {
         Ast::If(If { condition: Box::new(condition), then: Box::new(then), otherwise: otherwise.map(Box::new), location, typ: None })
     }
 
-    pub fn match_expr(expression: Ast<'a>, branches: Vec<(Ast<'a>, Ast<'a>)>, location: Location<'a>) -> Ast<'a> {
-        Ast::Match(Match { expression: Box::new(expression), branches, decision_tree: None, location, typ: None })
+    pub fn definition(pattern: Ast<'a>, expr: Ast<'a>, location: Location<'a>) -> Ast<'a> {
+        Ast::Definition(Definition { pattern: Box::new(pattern), expr: Box::new(expr), location, mutable: false, level: None, info: None, typ: None })
+    }
+
+    pub fn match_expr(expression: Ast<'a>, mut branches: Vec<(Ast<'a>, Ast<'a>)>, location: Location<'a>) -> Ast<'a> {
+        // (Issue #80) When compiling a match statement with a single variable branch e.g:
+        // `match ... | x -> ... ` a single Leaf node will be emitted as the decision tree
+        // after type checking which causes us to fail since `x` will not be bound to anything
+        // without a `Case` node being present. This is a hack to avoid this situation by compiling
+        // this class of expressions into let bindings instead.
+        if branches.len() == 1 && branches[0].0.is_matchable_variable() {
+            let (pattern, rest) = branches.pop().unwrap();
+            let definition = Ast::definition(pattern, expression, location);
+            // TODO: turning this into a sequence can leak names in the match branch to surrounding
+            // code. Soundness-wise this isn't an issue since in this case we know it will always
+            // match, but it is an inconsistency that should be fixed.
+            Ast::sequence(vec![definition, rest], location)
+        } else {
+            Ast::Match(Match { expression: Box::new(expression), branches, decision_tree: None, location, typ: None })
+        }
     }
 
     pub fn type_definition(name: String, args: Vec<String>, definition: TypeDefinitionBody<'a>, location: Location<'a>) -> Ast<'a> {

@@ -72,7 +72,7 @@ impl<'c> RefinementContext<'c> {
         match typ {
             Primitive(primitive) => self.primitive_type_to_sort(primitive, cache),
 
-            Function(args, return_type, varargs) => self.function_to_sort(typ, &return_type, args, *varargs, cache),
+            Function(function) => self.function_to_sort(typ, function, cache),
 
             TypeVariable(id) => {
                 match cache.find_binding(*id) {
@@ -106,30 +106,36 @@ impl<'c> RefinementContext<'c> {
             FloatType => self.z3_context.double_sort(),
             CharType => self.z3_context.int_sort(), // TODO: Should Char/Unit be None?
             BooleanType => self.z3_context.bool_sort(),
+            PtrType => self.z3_context.int_sort(),
             UnitType => self.z3_context.bool_sort(),
         }
     }
 
-    fn function_to_sort(&mut self, typ: &Type, return_type: &Type,
-        args: &[Type], varargs: bool, cache: &ModuleCache<'c>) -> z3::Sort
+    fn function_to_sort(&mut self, typ: &Type, function: &types::FunctionType, cache: &ModuleCache<'c>) -> z3::Sort
     {
-        // no function sort in z3, use an uninterpreted sort instead
-        let args = fmap(args, |arg| cache.follow_bindings(arg));
-        let return_type = cache.follow_bindings(return_type);
-
         if let Some(sort) = self.types.get(&typ) {
             return sort.clone();
         }
 
-        // Make sure to convert the args and return_type to sorts anyway,
+        // no function sort in z3, use an uninterpreted sort instead
+        let parameters = fmap(&function.parameters, |parameter| cache.follow_bindings(parameter));
+        let return_type = cache.follow_bindings(&function.return_type);
+        let environment = cache.follow_bindings(&function.environment);
+
+        // Make sure to convert the parameters and return_type to sorts anyway,
         // this has the side effect of creating the constructors in z3 for
         // sum types which other refinements rely upon.
-        args.iter().for_each(|arg| { self.type_to_sort(arg, cache); });
+        parameters.iter().for_each(|parameter| { self.type_to_sort(parameter, cache); });
         self.type_to_sort(&return_type, cache);
 
         let name = typ.display(cache).to_string();
         let sort = self.z3_context.uninterpreted_sort(&name);
-        let typ = Type::Function(args, Box::new(return_type), varargs);
+        let typ = Type::Function(types::FunctionType {
+            parameters,
+            return_type: Box::new(return_type),
+            is_varargs: function.is_varargs,
+            environment: Box::new(environment),
+        });
         self.types.insert(typ, sort.clone());
         sort
     }
@@ -139,16 +145,18 @@ impl<'c> RefinementContext<'c> {
         let typ = cache.follow_bindings(typ);
 
         match &typ {
-            Type::Ref(_) => {
+            Type::Primitive(PrimitiveType::PtrType)
+            | Type::Ref(_) => {
                 assert_eq!(args.len(), 1);
-                let name = format!("ref_{}", args[0].display(cache));
+                // let name = format!("ref_{}", args[0].display(cache));
 
-                let typ = Type::TypeApplication(Box::new(typ), args);
-                if let Some(sort) = self.types.get(&typ) {
-                    return sort.clone();
-                }
+                // let typ = Type::TypeApplication(Box::new(typ), args);
+                // if let Some(sort) = self.types.get(&typ) {
+                //     return sort.clone();
+                // }
 
-                let sort = self.z3_context.uninterpreted_sort(&name);
+                // let sort = self.z3_context.uninterpreted_sort(&name);
+                let sort = self.z3_context.int_sort();
                 self.types.insert(typ, sort.clone());
                 sort
             },
@@ -366,7 +374,7 @@ impl<'c> RefinementContext<'c> {
 
     pub fn check_builtin(&mut self, id: DefinitionInfoId, definition: &DefinitionInfo, typ: &Type) -> Option<Refinements<'c>> {
         let args = match typ {
-            Type::Function(params, ..) => params,
+            Type::Function(function) => &function.parameters,
             _ => return None,
         };
 

@@ -106,6 +106,7 @@ impl<'cache, 'contents> Lexer<'cache, 'contents> {
             ("float", Token::FloatType),
             ("char", Token::CharType),
             ("string", Token::StringType),
+            ("Ptr", Token::PointerType),
             ("bool", Token::BooleanType),
             ("unit", Token::UnitType),
             ("ref", Token::Ref),
@@ -280,17 +281,15 @@ impl<'cache, 'contents> Lexer<'cache, 'contents> {
     fn lex_alphanumeric(&mut self) -> IterElem<'cache> {
         let is_type = self.current.is_uppercase();
         let word = self.advance_while(|current, _| current.is_alphanumeric() || current == '_');
+        let location = self.locate();
 
-        if is_type {
-            Some((Token::TypeName(word.to_owned()), self.locate()))
-        } else {
-            match self.keywords.get(word) {
-                Some(keyword) => {
-                    self.previous_token_expects_indent = Lexer::should_expect_indent_after_token(keyword);
-                    Some((keyword.clone(), self.locate()))
-                }
-                None => Some((Token::Identifier(word.to_owned()), self.locate())),
+        match self.keywords.get(word) {
+            Some(keyword) => {
+                self.previous_token_expects_indent = Lexer::should_expect_indent_after_token(keyword);
+                Some((keyword.clone(), location))
             }
+            None if is_type => Some((Token::TypeName(word.to_owned()), location)),
+            None => Some((Token::Identifier(word.to_owned()), location)),
         }
     }
 

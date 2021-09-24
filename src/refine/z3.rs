@@ -288,7 +288,7 @@ impl Context {
     }
 
     pub fn define_function(self, name: &str, args: &mut [Ast], body: Ast) -> FuncDecl {
-        let arg_sorts = fmap(args, |&arg| self.get_sort(arg));
+        let arg_sorts = fmap(args.as_ref(), |&arg| self.get_sort(arg));
         let body_sort = self.get_sort(body);
         let name = self.symbol(name);
 

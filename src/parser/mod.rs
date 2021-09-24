@@ -21,6 +21,7 @@ mod error;
 #[macro_use]
 pub mod ast;
 pub mod pretty_printer;
+mod desugar;
 
 use crate::lexer::token::Token;
 use ast::{ Ast, Type, Trait, TypeDefinitionBody };
@@ -94,8 +95,8 @@ fn raw_definition<'a, 'b>(input: Input<'a, 'b>) -> ParseResult<'a, 'b, ast::Defi
 
 parser!(function_definition location -> 'b ast::Definition<'b> =
     given <- maybe(refinements);
-    name <- irrefutable_pattern_argument;
-    args <- many1(irrefutable_pattern_argument);
+    name <- pattern_argument;
+    args <- many1(pattern_argument);
     return_type <- maybe(function_return_type);
     _ <- expect(Token::Equal);
     body !<- block_or_statement;
@@ -130,7 +131,7 @@ parser!(function_return_type location -> 'b ast::Type<'b> =
 );
 
 parser!(variable_definition location -> 'b ast::Definition<'b> =
-    name <- irrefutable_pattern;
+    name <- pattern;
     _ <- expect(Token::Equal);
     mutable <- maybe(expect(Token::Mut));
     expr !<- block_or_statement;
@@ -152,38 +153,33 @@ parser!(assignment location =
     Ast::assignment(lhs, rhs, location)
 );
 
+fn pattern<'a, 'b>(input: Input<'a, 'b>) -> AstResult<'a, 'b> {
+    or(&[
+       pattern_pair,
+       type_annotation_pattern,
+       pattern_function_call,
+       pattern_argument,
+    ], &"pattern")(input)
+}
+
+// TODO: There's a lot of repeated parsing done in patterns due to or combinators
+// being used to express the pair -> type annotation -> call -> argument  lattice.
+parser!(pattern_pair loc =
+    first <- or(&[type_annotation_pattern, pattern_function_call, pattern_argument], "pattern");
+    _ <- expect(Token::Comma);
+    rest !<- pattern;
+    Ast::function_call(Ast::operator(Token::Comma, loc), vec![first, rest], loc)
+);
+
 parser!(type_annotation_pattern loc =
-    lhs <- irrefutable_pattern_argument;
+    lhs <- or(&[pattern_function_call, pattern_argument], "pattern");
     _ <- expect(Token::Colon);
     rhs <- parse_type;
     Ast::type_annotation(lhs, rhs, loc)
 );
 
-fn irrefutable_pattern<'a, 'b>(input: Input<'a, 'b>) -> AstResult<'a, 'b> {
-    or(&[
-       type_annotation_pattern,
-       irrefutable_pair_pattern,
-       irrefutable_pattern_argument
-    ], &"irrefutable_pattern")(input)
-}
-
-parser!(irrefutable_pair_pattern loc =
-    first <- irrefutable_pattern_argument;
-    _ <- expect(Token::Comma);
-    rest !<- irrefutable_pattern;
-    Ast::function_call(Ast::operator(Token::Comma, loc), vec![first, rest], loc)
-);
-
 fn parenthesized_irrefutable_pattern<'a, 'b>(input: Input<'a, 'b>) -> AstResult<'a, 'b> {
-    parenthesized(or(&[operator, irrefutable_pattern], "irrefutable pattern"))(input)
-}
-
-fn irrefutable_pattern_argument<'a, 'b>(input: Input<'a, 'b>) -> AstResult<'a, 'b> {
-    match input[0].0 {
-        Token::ParenthesisLeft => parenthesized_irrefutable_pattern(input),
-        Token::UnitLiteral => unit(input),
-        _ => variable(input),
-    }
+    parenthesized(or(&[operator, pattern], "pattern"))(input)
 }
 
 parser!(type_definition loc =
@@ -285,7 +281,7 @@ parser!(trait_body_block loc -> 'b Vec<ast::TypeAnnotation<'b>> =
 );
 
 parser!(declaration loc -> 'b ast::TypeAnnotation<'b> =
-    lhs <- irrefutable_pattern_argument;
+    lhs <- pattern_argument;
     _ <- expect(Token::Colon);
     rhs !<- parse_type;
     ast::TypeAnnotation { lhs: Box::new(lhs), rhs, location: loc, typ: None }
@@ -407,28 +403,8 @@ fn pop_operator<'c>(operator_stack: &mut Vec<&Token>, results: &mut Vec<(Ast<'c>
     let (lhs, lhs_location) = results.pop().unwrap();
     let location = lhs_location.union(rhs_location);
     let operator = operator_stack.pop().unwrap().clone();
-    let call =  desugar_apply_operator(operator, lhs, rhs, location);
+    let call = desugar::desugar_operators(operator, lhs, rhs, location);
     results.push((call, location));
-}
-
-fn desugar_apply_operator<'a>(operator: Token, lhs: Ast<'a>, rhs: Ast<'a>, location: Location<'a>) -> Ast<'a> {
-    match operator {
-        Token::ApplyLeft  => prepend_argument_to_function(lhs, rhs, location),
-        Token::ApplyRight => prepend_argument_to_function(rhs, lhs, location),
-        _ => {
-            let operator = Ast::operator(operator, location);
-            Ast::function_call(operator, vec![lhs, rhs], location)
-        }
-    }
-}
-
-fn prepend_argument_to_function<'a>(f: Ast<'a>, arg: Ast<'a>, location: Location<'a>) -> Ast<'a> {
-    if let Ast::FunctionCall(mut call) = f {
-        call.args.insert(0, arg);
-        Ast::FunctionCall(call)
-    } else {
-        Ast::function_call(f, vec![arg], location)
-    }
 }
 
 /// Parse an arbitrary expression using the shunting-yard algorithm
@@ -480,6 +456,13 @@ fn term<'a, 'b>(input: Input<'a, 'b>) -> AstResult<'a, 'b> {
 parser!(function_call loc =
     function <- member_access;
     args <- many1(function_argument);
+    desugar::desugar_explicit_currying(function, args, Ast::function_call, loc)
+);
+
+
+parser!(pattern_function_call loc =
+    function <- pattern_function_argument;
+    args <- many1(pattern_function_argument);
     Ast::function_call(function, args, loc)
 );
 
@@ -496,8 +479,6 @@ parser!(if_expr loc =
 parser!(match_expr loc =
     _ <- expect(Token::Match);
     expression !<- block_or_statement;
-    _ !<- maybe_newline;
-    _ !<- expect(Token::With);
     branches !<- many0(match_branch);
     Ast::match_expr(expression, branches, loc)
 );
@@ -536,6 +517,14 @@ fn parse_type<'a, 'b>(input: Input<'a, 'b>) -> ParseResult<'a, 'b, Type<'b>> {
     ], &"type")(input)
 }
 
+fn function_arg_type<'a, 'b>(input: Input<'a, 'b>) -> ParseResult<'a, 'b, Type<'b>> {
+    or(&[
+        type_application,
+        pair_type,
+        basic_type
+    ], &"type")(input)
+}
+
 fn parse_type_no_pair<'a, 'b>(input: Input<'a, 'b>) -> ParseResult<'a, 'b, Type<'b>> {
     or(&[
         function_type,
@@ -550,6 +539,7 @@ fn basic_type<'a, 'b>(input: Input<'a, 'b>) -> ParseResult<'a, 'b, Type<'b>> {
         Token::FloatType => float_type(input),
         Token::CharType => char_type(input),
         Token::StringType => string_type(input),
+        Token::PointerType => pointer_type(input),
         Token::BooleanType => boolean_type(input),
         Token::UnitType => unit_type(input),
         Token::Ref => reference_type(input),
@@ -567,7 +557,7 @@ fn parenthesized_type<'a, 'b>(input: Input<'a, 'b>) -> ParseResult<'a, 'b, Type<
 parser!(match_branch _loc -> 'b (Ast<'b>, Ast<'b>) =
     _ <- maybe_newline;
     _ <- expect(Token::Pipe);
-    pattern !<- expression;
+    pattern !<- pattern;
     _ !<- expect(Token::RightArrow);
     branch !<- block_or_statement;
     (pattern, branch)
@@ -588,6 +578,14 @@ fn function_argument<'a, 'b>(input: Input<'a, 'b>) -> AstResult<'a, 'b> {
         Token::Ampersand => ref_expr(input),
         Token::At => at_expr(input),
         _ => member_access(input),
+    }
+}
+
+fn pattern_function_argument<'a, 'b>(input: Input<'a, 'b>) -> AstResult<'a, 'b> {
+    match input[0].0 {
+        Token::Ampersand => ref_expr(input),
+        Token::At => at_expr(input),
+        _ => pattern_argument(input),
     }
 }
 
@@ -623,9 +621,24 @@ fn argument<'a, 'b>(input: Input<'a, 'b>) -> AstResult<'a, 'b> {
     }
 }
 
+fn pattern_argument<'a, 'b>(input: Input<'a, 'b>) -> AstResult<'a, 'b> {
+    match input[0].0 {
+        Token::Identifier(_) => variable(input),
+        Token::StringLiteral(_) => string(input),
+        Token::IntegerLiteral(_, _) => integer(input),
+        Token::FloatLiteral(_) => float(input),
+        Token::CharLiteral(_) => parse_char(input),
+        Token::BooleanLiteral(_) => parse_bool(input),
+        Token::UnitLiteral => unit(input),
+        Token::ParenthesisLeft => parenthesized_irrefutable_pattern(input),
+        Token::TypeName(_) => variant(input),
+        _ => Err(ParseError::InRule(&"pattern argument", input[0].1)),
+    }
+}
+
 parser!(lambda loc =
     _ <- expect(Token::Fn);
-    args !<- many1(irrefutable_pattern_argument);
+    args !<- many1(pattern_argument);
     return_type <- maybe(function_return_type);
     _ !<- expect(Token::RightArrow);
     body !<- block_or_statement;
@@ -682,7 +695,7 @@ parser!(unit loc =
 );
 
 parser!(function_type loc -> 'b Type<'b> =
-    args <- many1(basic_type);
+    args <- delimited_trailing(function_arg_type, expect(Token::Subtract));
     varargs <- maybe(varargs);
     _ <- expect(Token::RightArrow);
     return_type <- parse_type;
@@ -720,6 +733,11 @@ parser!(char_type loc -> 'b Type<'b> =
 parser!(string_type loc -> 'b Type<'b> =
     _ <- expect(Token::StringType);
     Type::StringType(loc)
+);
+
+parser!(pointer_type loc -> 'b Type<'b> =
+    _ <- expect(Token::PointerType);
+    Type::PointerType(loc)
 );
 
 parser!(boolean_type loc -> 'b Type<'b> =

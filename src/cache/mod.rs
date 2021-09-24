@@ -16,7 +16,7 @@
 //! the relevant phase. An example is the `llvm::Generator` in the llvm codegen phase.
 use crate::nameresolution::NameResolver;
 use crate::types::{ TypeVariableId, TypeInfoId, TypeInfo, Type, TypeInfoBody };
-use crate::types::{ TypeBinding, LetBindingLevel, Kind };
+use crate::types::{ TypeBinding, LetBindingLevel, Kind, FunctionType };
 use crate::types::traits::{ RequiredImpl, RequiredTrait };
 use crate::error::location::{ Location, Locatable };
 use crate::parser::ast::{ Ast, Definition, TraitDefinition, TraitImpl, TypeAnnotation };
@@ -300,7 +300,7 @@ pub struct VariableId(pub usize);
 impl<'a> ModuleCache<'a> {
     pub fn new(project_directory: &'a Path) -> ModuleCache<'a> {
         let mut cache = ModuleCache {
-            relative_roots: vec![project_directory.to_owned(), dirs::config_dir().unwrap().join("stdlib")],
+            relative_roots: vec![project_directory.to_owned(), dirs::config_dir().unwrap().join("ante/stdlib")],
             int_trait: TraitInfoId(0), // Dummy value since we must have the cache to push a trait
             prelude_path: dirs::config_dir().unwrap().join("stdlib/prelude"),
             // Really wish you could do ..Default::default() for the remaining fields
@@ -462,10 +462,13 @@ impl<'a> ModuleCache<'a> {
         match typ {
             Primitive(primitive) => Primitive(*primitive),
 
-            Function(arg_types, return_type, varargs) => {
-                let args = fmap(arg_types, |typ| self.follow_bindings(typ));
-                let return_type = self.follow_bindings(return_type);
-                Function(args, Box::new(return_type), *varargs)
+            Function(function) => {
+                let parameters = fmap(&function.parameters, |typ| self.follow_bindings(typ));
+                let return_type = Box::new(self.follow_bindings(&function.return_type));
+                let environment = Box::new(self.follow_bindings(&function.environment));
+                Function(FunctionType { 
+                    parameters, return_type, environment, is_varargs: function.is_varargs
+                })
             },
 
             TypeVariable(id) => {
