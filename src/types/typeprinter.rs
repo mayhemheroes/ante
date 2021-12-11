@@ -7,10 +7,11 @@ use crate::types::{ Type, TypeVariableId, TypeInfoId, PrimitiveType,
                     FunctionType, TypeBinding };
 use crate::types::traits::{ RequiredTrait, RequiredTraitPrinter };
 use crate::types::typechecker::find_all_typevars;
-use crate::cache::ModuleCache;
-use crate::util::join_with;
+use crate::types::refinement::Refinement;
+use crate::cache::{ ModuleCache, DefinitionInfoId };
+use crate::util::{ join_with, reinterpret_from_bits };
 
-use std::collections::HashMap;
+use std::collections::{ HashMap, HashSet };
 use std::fmt::{ Display, Debug, Formatter };
 
 use colored::*;
@@ -21,6 +22,10 @@ pub struct TypePrinter<'a, 'b> {
 
     /// Maps unique type variable IDs to human readable names like a, b, c, etc.
     typevar_names: HashMap<TypeVariableId, String>,
+
+    /// Maps unique DefinitionInfoIds to their actual names from the module cache
+    /// or a unique one in case two ever collide.
+    variable_names: HashMap<DefinitionInfoId, String>,
 
     /// Controls whether to show or hide some hidden data, like ref lifetimes
     debug: bool,
@@ -53,24 +58,51 @@ fn fill_typevar_map(map: &mut HashMap<TypeVariableId, String>, typevars: Vec<Typ
     }
 }
 
+pub fn variable_name_map<'c>(vars: Vec<DefinitionInfoId>, cache: &ModuleCache<'c>) -> HashMap<DefinitionInfoId, String> {
+    let mut map = HashMap::new();
+    let mut used_names = HashSet::new();
+
+    for id in vars {
+        if !map.contains_key(&id) {
+            let basename = &cache.definition_infos[id.0].name;
+
+            let mut name = basename.clone();
+            let mut counter = 2;
+            while used_names.contains(&name) {
+                name = format!("{}{}", basename, counter);
+                counter += 1;
+            }
+
+            used_names.insert(name.clone());
+            map.insert(id, name);
+        }
+    }
+    map
+}
+
 /// Prints out the given type and traits on screen. The type and traits are all taken in together
 /// so that any repeated typevariables e.g. `TypeVariableId(55)` that may be used in both the type
 /// and any traits are given the same name in both. Printing out the type separately from the
 /// traits would cause type variable naming to restart at `a` which may otherwise give them
 /// different names.
 pub fn show_type_and_traits<'b>(typ: &Type, traits: &[RequiredTrait], cache: &ModuleCache<'b>) {
-    let mut map = HashMap::new();
+    let mut typevar_map = HashMap::new();
     let mut current = 'a';
 
-    let typevars = find_all_typevars(typ, false, cache);
-    fill_typevar_map(&mut map, typevars, &mut current);
+    let (typevars, vars) = find_all_typevars(typ, false, cache);
+    fill_typevar_map(&mut typevar_map, typevars, &mut current);
+    
+    let variable_names = variable_name_map(vars, cache);
 
     let debug = true;
-    print!("{}", TypePrinter { typ, cache, debug, typevar_names: map.clone() });
+    print!("{}", TypePrinter { typ, cache, debug, variable_names, typevar_names: typevar_map.clone() });
 
     let mut traits = traits.iter().map(|required_trait| {
-        fill_typevar_map(&mut map, required_trait.find_all_typevars(cache), &mut current);
-        RequiredTraitPrinter { required_trait: required_trait.clone(), cache, debug, typevar_names: map.clone() }
+        let (typevars, variables) = required_trait.find_all_typevars(cache);
+        fill_typevar_map(&mut typevar_map, typevars, &mut current);
+
+        let variable_names = variable_name_map(variables, cache);
+        RequiredTraitPrinter { required_trait: required_trait.clone(), variable_names, cache, debug, typevar_names: typevar_map.clone() }
             .to_string()
     }).collect::<Vec<String>>();
 
@@ -88,8 +120,8 @@ pub fn show_type_and_traits<'b>(typ: &Type, traits: &[RequiredTrait], cache: &Mo
 }
 
 impl<'a, 'b> TypePrinter<'a, 'b> {
-    pub fn new(typ: &'a Type, typevar_names: HashMap<TypeVariableId, String>, debug: bool, cache: &'a ModuleCache<'b>) -> TypePrinter<'a, 'b> {
-        TypePrinter { typ, typevar_names, debug, cache }
+    pub fn new(typ: &'a Type, typevar_names: HashMap<TypeVariableId, String>, variable_names: HashMap<DefinitionInfoId, String>, debug: bool, cache: &'a ModuleCache<'b>) -> TypePrinter<'a, 'b> {
+        TypePrinter { typ, typevar_names, variable_names, debug, cache }
     }
 
     fn fmt_type(&self, typ: &Type, f: &mut Formatter) -> std::fmt::Result {
@@ -101,6 +133,8 @@ impl<'a, 'b> TypePrinter<'a, 'b> {
             Type::TypeApplication(constructor, args) => self.fmt_type_application(constructor, args, f),
             Type::Ref(lifetime) => self.fmt_ref(*lifetime, f),
             Type::ForAll(typevars, typ) => self.fmt_forall(typevars, typ, f),
+            Type::Refined(typ, refinements) => self.fmt_refined(typ, refinements, f),
+            Type::Named(id, typ) => self.fmt_named(*id, typ, f),
         }
     }
 
@@ -122,7 +156,7 @@ impl<'a, 'b> TypePrinter<'a, 'b> {
             write!(f, " ")?;
 
             if i != function.parameters.len() - 1 {
-                write!(f, "{}", "- ".blue())?;
+                write!(f, "{}", "-> ".blue())?;
             }
         }
 
@@ -212,6 +246,50 @@ impl<'a, 'b> TypePrinter<'a, 'b> {
         }
         write!(f, "{}", ". ".blue())?;
         self.fmt_type(typ.as_ref(), f)?;
+        write!(f, "{}", ")".blue())
+    }
+
+    fn fmt_refined(&self, typ: &Box<Type>, refinement: &Refinement, f: &mut Formatter) -> std::fmt::Result {
+        write!(f, "{}", "(".blue())?;
+        self.fmt_type(typ, f)?;
+        write!(f, "{}", " & ".blue())?;
+        self.fmt_refinement(refinement, f)?;
+        write!(f, "{}", ")".blue())
+    }
+
+    fn fmt_refinement(&self, refinement: &Refinement, f: &mut Formatter) -> std::fmt::Result {
+        match refinement {
+            Refinement::Integer(x) => write!(f, "{}", *x),
+            Refinement::Float(x) => write!(f, "{}", reinterpret_from_bits(*x)),
+            Refinement::Variable(id) => write!(f, "{}", self.variable_names[id]),
+            Refinement::Uninterpreted(id, args)
+            | Refinement::Constructor(id, args) => {
+                write!(f, "({}", self.variable_names[id])?;
+                for arg in args.iter() {
+                    write!(f, " ")?;
+                    self.fmt_refinement(arg, f)?;
+                }
+                write!(f, ")")
+            },
+            Refinement::PrimitiveCall(prim, args) => {
+                write!(f, "(")?;
+                if args.len() == 1 {
+                    write!(f, "{} ", prim)?;
+                    self.fmt_refinement(&args[0], f)?;
+                } else {
+                    assert_eq!(args.len(), 2);
+                    self.fmt_refinement(&args[0], f)?;
+                    write!(f, " {} ", prim)?;
+                    self.fmt_refinement(&args[1], f)?;
+                }
+                write!(f, ")")
+            },
+        }
+    }
+
+    fn fmt_named(&self, id: DefinitionInfoId, typ: &Box<Type>, f: &mut Formatter) -> std::fmt::Result {
+        write!(f, "{}{}: ", "(".blue(), self.variable_names[&id])?;
+        self.fmt_type(typ, f)?;
         write!(f, "{}", ")".blue())
     }
 }

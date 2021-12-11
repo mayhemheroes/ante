@@ -1,0 +1,6 @@
+
+foo (x: i32 & 3) = ()
+
+// args: --check
+// expected stderr:
+// error:   expected bool, found int

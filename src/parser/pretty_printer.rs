@@ -106,9 +106,9 @@ impl<'a> Display for ast::Type<'a> {
             TypeApplication(constructor, args, _) => {
                 write!(f, "({} {})", constructor, join_with(args, " "))
             },
-            PairType(first, rest, _) => {
-                write!(f, "({}, {})", first, rest)
-            }
+            PairType(first, rest, _) => write!(f, "({}, {})", first, rest),
+            Refined(typ, refinement, _) => write!(f, "({}. {})", typ, refinement),
+            Named(name, typ, _) => write!(f, "({}: {})", name, typ),
         }
     }
 }

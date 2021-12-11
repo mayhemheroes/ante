@@ -24,6 +24,7 @@ mod error;
 mod cache;
 mod nameresolution;
 mod types;
+mod refinements;
 mod lifetimes;
 mod llvm;
 
@@ -91,6 +92,7 @@ pub fn main() {
         .arg(Arg::with_name("delete-binary").long("delete-binary").help("Delete the resulting binary after compiling"))
         .arg(Arg::with_name("show-time").long("show-time").help("Print out the time each compiler pass takes for the given program"))
         .arg(Arg::with_name("show-types").long("show-types").help("Print out the type of each definition"))
+        .arg(Arg::with_name("show-refinements").long("show-refinements").help("Print out the type and refinements of each definition"))
         .arg(Arg::with_name("show-lifetimes").long("show-lifetimes").help("Print out the input file annotated with inferred lifetimes of heap allocations"))
         .arg(Arg::with_name("file").help("The file to compile").required(true))
         .get_matches();
@@ -137,6 +139,10 @@ pub fn main() {
     types::typechecker::infer_ast(ast, &mut cache);
 
     if args.is_present("show-types") {
+        print_definition_types(&cache);
+    }
+
+    if args.is_present("show-refinements") {
         print_definition_types(&cache);
     }
 

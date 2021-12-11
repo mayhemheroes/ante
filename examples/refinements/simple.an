@@ -1,0 +1,8 @@
+assert_lt (x: i32) (y: i32 & x < y) = ()
+
+assert_lt 3 4
+assert_lt 4 3
+
+// args: --check --show-refinements
+// expected stdout:
+// error: ... failed to prove 4 < 3

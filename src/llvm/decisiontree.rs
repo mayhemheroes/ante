@@ -224,6 +224,8 @@ impl<'g> Generator<'g> {
             ForAll(_, typ) => Self::is_union_constructor(typ, cache),
             UserDefinedType(id) => cache.type_infos[id.0].is_union(),
             TypeVariable(_) => unreachable!("Constructors should always have concrete types"),
+            Refined(typ, _) => Self::is_union_constructor(typ, cache),
+            Named(_, typ) => Self::is_union_constructor(typ, cache),
         }
     }
 

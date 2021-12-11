@@ -122,6 +122,10 @@ pub fn replace_all_typevars_with_bindings<'c>(typ: &Type, new_bindings: &mut Typ
             let args = fmap(args, |arg| replace_all_typevars_with_bindings(arg, new_bindings, cache));
             TypeApplication(Box::new(typ), args)
         },
+
+        Refined(typ, refinement) => Refined(Box::new(replace_all_typevars_with_bindings(typ, new_bindings, cache)), refinement.clone()),
+
+        Named(id, typ) => Named(*id, Box::new(replace_all_typevars_with_bindings(typ, new_bindings, cache))),
     }
 }
 
@@ -180,6 +184,16 @@ pub fn bind_typevars<'c>(typ: &Type, type_bindings: &TypeBindings, cache: &Modul
             let args = fmap(args, |arg| bind_typevars(arg, type_bindings, cache));
             TypeApplication(Box::new(typ), args)
         },
+
+        Refined(typ, refinement) => {
+            let typ = bind_typevars(typ, type_bindings, cache);
+            Refined(Box::new(typ), refinement.clone())
+        }
+
+        Named(id, typ) => {
+            let typ = bind_typevars(typ, type_bindings, cache);
+            Named(*id, Box::new(typ))
+        }
     }
 }
 
@@ -225,6 +239,10 @@ pub fn contains_any_typevars_from_list<'c>(typ: &Type, list: &[TypeVariableId], 
             contains_any_typevars_from_list(typ, list, cache)
             || args.iter().any(|arg| contains_any_typevars_from_list(arg, list, cache))
         },
+
+        Refined(typ, _refinement) => contains_any_typevars_from_list(typ, list, cache),
+
+        Named(_id, typ) => contains_any_typevars_from_list(typ, list, cache),
     }
 }
 
@@ -363,6 +381,8 @@ fn occurs<'b>(id: TypeVariableId, level: LetBindingLevel, typ: &Type, bindings: 
             !typevars.iter().any(|typevar| *typevar == id)
             && occurs(id, level, typ, bindings, cache)
         },
+        Refined(typ, _) => occurs(id, level, typ, bindings, cache),
+        Named(_, typ) => occurs(id, level, typ, bindings, cache),
     }
 }
 
@@ -467,6 +487,16 @@ pub fn try_unify_with_bindings<'b>(t1: &Type, t2: &Type, bindings: &mut TypeBind
             if a_vars.len() != b_vars.len() {
                 return Err(make_error!(location, "Type mismatch between {} and {}", a.display(cache), b.display(cache)));
             }
+            try_unify_with_bindings(a, b, bindings, location, cache)
+        },
+
+        // Skip past any refined/named types
+        (Refined(a, _), b)
+        | (Named(_, a), b) => {
+            try_unify_with_bindings(a, b, bindings, location, cache)
+        },
+        | (a, Refined(b, _))
+        | (a, Named(_, b)) => {
             try_unify_with_bindings(a, b, bindings, location, cache)
         },
 
@@ -575,54 +605,70 @@ fn level_is_polymorphic(level: LetBindingLevel) -> bool {
 /// Since this function uses CURRENT_LEVEL when polymorphic_only = true, the function
 /// should only be used with polymorphic_only = false outside of the typechecking pass.
 /// Otherwise the decision of whether to propagate the variable would be incorrect.
-pub fn find_all_typevars<'a>(typ: &Type, polymorphic_only: bool, cache: &ModuleCache<'a>) -> Vec<TypeVariableId> {
+pub fn find_all_typevars<'a>(typ: &Type, polymorphic_only: bool, cache: &ModuleCache<'a>) -> (Vec<TypeVariableId>, Vec<DefinitionInfoId>) {
+    let mut type_variables = vec![];
+    let mut refinement_variables = vec![];
+    find_all_typevars_helper(typ, polymorphic_only, &mut type_variables, &mut refinement_variables, cache);
+    (type_variables, refinement_variables)
+}
+
+pub fn find_all_typevars_helper<'a>(typ: &Type, polymorphic_only: bool,
+    type_variables: &mut Vec<TypeVariableId>,
+    refinement_variables: &mut Vec<DefinitionInfoId>,
+    cache: &ModuleCache<'a>)
+{
     match typ {
-        Primitive(_) => vec![],
-        UserDefinedType(_) => vec![],
+        Primitive(_) => (),
+        UserDefinedType(_) => (),
         TypeVariable(id) => {
-            find_typevars_in_typevar_binding(*id, polymorphic_only, cache)
+            find_typevars_in_typevar_binding(*id, polymorphic_only, type_variables, refinement_variables, cache)
         },
         Function(function) => {
-            let mut type_variables = vec![];
             for parameter in &function.parameters {
-                type_variables.append(&mut find_all_typevars(&parameter, polymorphic_only, cache));
+                find_all_typevars_helper(&parameter, polymorphic_only, type_variables, refinement_variables, cache);
             }
-            type_variables.append(&mut find_all_typevars(&function.environment, polymorphic_only, cache));
-            type_variables.append(&mut find_all_typevars(&function.return_type, polymorphic_only, cache));
-            type_variables
+            find_all_typevars_helper(&function.environment, polymorphic_only, type_variables, refinement_variables, cache);
+            find_all_typevars_helper(&function.return_type, polymorphic_only, type_variables, refinement_variables, cache);
         },
         TypeApplication(constructor, args) => {
-            let mut type_variables = find_all_typevars(constructor, polymorphic_only, cache);
+            find_all_typevars_helper(constructor, polymorphic_only, type_variables, refinement_variables, cache);
             for arg in args {
-                type_variables.append(&mut find_all_typevars(&arg, polymorphic_only, cache));
+                find_all_typevars_helper(&arg, polymorphic_only, type_variables, refinement_variables, cache);
             }
-            type_variables
         },
         Ref(lifetime) => {
-            find_typevars_in_typevar_binding(*lifetime, polymorphic_only, cache)
+            find_typevars_in_typevar_binding(*lifetime, polymorphic_only, type_variables, refinement_variables, cache)
         }
         ForAll(polymorphic_typevars, typ) => {
-            if polymorphic_only {
-                polymorphic_typevars.clone()
-            } else {
-                let mut typevars = polymorphic_typevars.clone();
-                typevars.append(&mut find_all_typevars(typ, false, cache));
-                typevars
+            type_variables.append(&mut polymorphic_typevars.clone());
+
+            if !polymorphic_only {
+                find_all_typevars_helper(typ, false, type_variables, refinement_variables, cache);
             }
+        },
+        Refined(typ, refinement) => {
+            find_all_typevars_helper(typ, polymorphic_only, type_variables, refinement_variables, cache);
+            refinement_variables.append(&mut refinement.find_variables());
+        },
+        Named(id, typ) => {
+            refinement_variables.push(*id);
+            find_all_typevars_helper(typ, polymorphic_only, type_variables, refinement_variables, cache);
         },
     }
 }
 
 /// Helper for find_all_typevars which gets the TypeBinding for a given
 /// TypeVariableId and either recurses on it if it is bound or returns it.
-fn find_typevars_in_typevar_binding<'c>(id: TypeVariableId, polymorphic_only: bool, cache: &ModuleCache<'c>) -> Vec<TypeVariableId> {
+fn find_typevars_in_typevar_binding<'c>(id: TypeVariableId, polymorphic_only: bool,
+    type_variables: &mut Vec<TypeVariableId>,
+    refinement_variables: &mut Vec<DefinitionInfoId>,
+    cache: &ModuleCache<'c>)
+{
     match &cache.type_bindings[id.0] {
-        Bound(t) => find_all_typevars(t, polymorphic_only, cache),
+        Bound(t) => find_all_typevars_helper(t, polymorphic_only, type_variables, refinement_variables, cache),
         Unbound(level, _) => {
             if level_is_polymorphic(*level) || !polymorphic_only {
-                vec![id]
-            } else {
-                vec![]
+                type_variables.push(id);
             }
         }
     }
@@ -630,9 +676,10 @@ fn find_typevars_in_typevar_binding<'c>(id: TypeVariableId, polymorphic_only: bo
 
 fn find_all_typevars_in_traits<'a>(traits: &TraitConstraints, cache: &ModuleCache<'a>) -> Vec<TypeVariableId> {
     let mut typevars = vec![];
+    let mut refinement_vars = vec![];
     for constraint in traits.iter() {
         for typ in constraint.args.iter() {
-            typevars.append(&mut find_all_typevars(typ, true, cache));
+            find_all_typevars_helper(typ, true, &mut typevars, &mut refinement_vars, cache);
         }
     }
     typevars
@@ -641,7 +688,7 @@ fn find_all_typevars_in_traits<'a>(traits: &TraitConstraints, cache: &ModuleCach
 /// Find all typevars declared inside the current LetBindingLevel and wrap the type in a PolyType
 /// e.g.  generalize (a -> b -> b) = forall a b. a -> b -> b
 fn generalize<'a>(typ: &Type, cache: &ModuleCache<'a>) -> Type {
-    let mut typevars = find_all_typevars(typ, true, cache);
+    let (mut typevars, _) = find_all_typevars(typ, true, cache);
     if typevars.is_empty() {
         typ.clone()
     } else {
@@ -769,16 +816,31 @@ fn bind_irrefutable_pattern<'c>(ast: &mut ast::Ast<'c>, typ: &Type,
             unify(typ, annotation.typ.as_ref().unwrap(), annotation.location, cache);
             bind_irrefutable_pattern(annotation.lhs.as_mut(), typ, required_traits, should_generalize, cache);
         },
-        FunctionCall(call) if call.is_pair_constructor() => {
-            let args = fmap(&call.args, |_| next_type_variable(cache));
-            let pair_type = Box::new(Type::UserDefinedType(PAIR_TYPE));
+        FunctionCall(call) => {
+            assert_function_used_in_type_is_type_constructor(call.function.as_ref());
 
-            let pair_type = Type::TypeApplication(pair_type, args);
-            unify(&typ, &pair_type, call.location, cache);
+            let parameters = fmap(&call.args, |_| next_type_variable(cache));
 
-            match pair_type {
-                Type::TypeApplication(_, args) => {
-                    for (element, element_type) in call.args.iter_mut().zip(args) {
+            if call.is_pair_constructor() {
+                let pair_type = Box::new(Type::UserDefinedType(PAIR_TYPE));
+                let return_type = Type::TypeApplication(pair_type, parameters.clone());
+                unify(&typ, &return_type, call.location, cache);
+            }
+
+            let expected_fn_type = Type::Function(FunctionType {
+                parameters,
+                return_type: Box::new(typ.clone()),
+                environment: Box::new(next_type_variable(cache)),
+                is_varargs: false,
+            });
+
+            let (fn_type, constraints) = call.function.infer_impl(cache);
+            assert!(constraints.is_empty(), "Unimplemented: functions with trait constraints used in type positions");
+            unify(&expected_fn_type, &fn_type, call.location, cache);
+
+            match expected_fn_type {
+                Type::Function(function_type) => {
+                    for (element, element_type) in call.args.iter_mut().zip(function_type.parameters) {
                         bind_irrefutable_pattern(element, &element_type, required_traits, should_generalize, cache);
                     }
                 },
@@ -787,6 +849,22 @@ fn bind_irrefutable_pattern<'c>(ast: &mut ast::Ast<'c>, typ: &Type,
         },
         _ => {
             error!(ast.locate(), "Invalid syntax in irrefutable pattern");
+        }
+    }
+}
+
+/// Issue an error message unless a function used in a type position (e.g. 'Foo' in `x: Foo a b`)
+/// is a type constructor (ie. capitalized), a comma, or a type variable. 
+fn assert_function_used_in_type_is_type_constructor(ast: &ast::Ast) {
+    use ast::Ast::*;
+    use ast::VariableKind::*;
+    use crate::lexer::token::Token;
+    match ast {
+        Variable(variable) if matches!(variable.kind, TypeConstructor(_)) => (),
+        Variable(variable) if matches!(variable.kind, Operator(Token::Comma)) => (),
+        Variable(variable) if matches!(variable.kind, Identifier(_)) => (),
+        _ => {
+            error!(ast.locate(), "This must be a type constructor to be used in a type");
         }
     }
 }
@@ -1051,7 +1129,7 @@ impl<'a> Inferable<'a> for ast::Definition<'a> {
         bind_irrefutable_pattern(self.pattern.as_mut(), &t, &vec![], false, cache);
 
         // Now infer the traits + type of the lhs
-        let typevars_in_fn = find_all_typevars(self.pattern.get_type().unwrap(), false, cache);
+        let (typevars_in_fn, _) = find_all_typevars(self.pattern.get_type().unwrap(), false, cache);
         let exposed_traits = traitchecker::resolve_traits(traits, &typevars_in_fn, cache);
         bind_irrefutable_pattern(self.pattern.as_mut(), &t, &exposed_traits, true, cache);
 

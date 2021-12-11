@@ -132,8 +132,11 @@ fn find_int_constraint_impl<'c>(constraint: &TraitConstraint, bindings: &TypeBin
     cache: &mut ModuleCache<'c>) -> UnificationResult<'c>
 {
     let typ = typechecker::follow_bindings_in_cache_and_map(&constraint.args[0], bindings, cache);
+    match_int_constraint(&typ, constraint.locate(cache), cache)
+}
 
-    match &typ {
+fn match_int_constraint<'c>(typ: &Type, location: Location<'c>, cache: &mut ModuleCache<'c>) -> UnificationResult<'c> {
+    match typ {
         Type::Primitive(PrimitiveType::IntegerType(kind)) => {
             // Any integer literal impl Int by default, though none should
             // be Unknown or Inferred at this point in type inference. Any Unknown literal
@@ -150,9 +153,12 @@ fn find_int_constraint_impl<'c>(constraint: &TraitConstraint, bindings: &TypeBin
             // unbound, bind it to the default integer type (i32) here.
             // try_unify is used here to avoid performing the binding in case this impl isn't
             // selected to be used.
-            typechecker::try_unify(&typ, &DEFAULT_INTEGER_TYPE, constraint.locate(cache), cache)
+            typechecker::try_unify(&typ, &DEFAULT_INTEGER_TYPE, location, cache)
         },
-        _ => Err(make_error!(constraint.locate(cache), "Expected a primitive integer type, but found {}", typ.display(cache))),
+        Type::Refined(typ, _) => {
+            match_int_constraint(typ, location, cache)
+        },
+        _ => Err(make_error!(location, "Expected a primitive integer type, but found {}", typ.display(cache))),
     }
 }
 

@@ -1,0 +1,6 @@
+Gt a = b:i32 & a < b
+
+assert_lt (x: i32) (y: Gt x) = ()
+
+assert_lt 3 4
+assert_lt 4 3

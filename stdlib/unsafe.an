@@ -1,0 +1,7 @@
+
+type Unsafe t = x: t
+
+trustme (Unsafe v) = v
+
+transmute (x: a) -> Unsafe b =
+    Unsafe (builtin "transmute")

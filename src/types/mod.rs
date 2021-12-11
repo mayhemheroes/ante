@@ -12,6 +12,7 @@ use crate::lifetimes;
 use std::collections::HashMap;
 
 pub mod pattern;
+pub mod refinement;
 pub mod typed;
 pub mod typechecker;
 pub mod traitchecker;
@@ -101,6 +102,10 @@ pub enum Type {
     /// generic functions from normal functions whose arguments are
     /// just type variables of unknown types yet to be inferenced.
     ForAll(Vec<TypeVariableId>, Box<Type>),
+
+    Refined(Box<Type>, refinement::Refinement),
+
+    Named(DefinitionInfoId, Box<Type>),
 }
 
 impl Type {
@@ -123,7 +128,7 @@ impl Type {
 
     /// Pretty-print each type with each typevar substituted for a, b, c, etc.
     pub fn display<'a, 'b>(&'a self, cache: &'a ModuleCache<'b>) -> typeprinter::TypePrinter<'a, 'b> {
-        let typevars = typechecker::find_all_typevars(self, false, cache);
+        let (typevars, refined_vars) = typechecker::find_all_typevars(self, false, cache);
         let mut typevar_names = HashMap::new();
         let mut current = 'a';
 
@@ -135,13 +140,14 @@ impl Type {
             }
         }
 
-        typeprinter::TypePrinter::new(self, typevar_names, false, cache)
+        let variable_names = typeprinter::variable_name_map(refined_vars, cache);
+        typeprinter::TypePrinter::new(self, typevar_names, variable_names, false, cache)
     }
 
     /// Like display but show the real unique TypeVariableId for each typevar instead
     #[allow(dead_code)]
     pub fn debug<'a, 'b>(&'a self, cache: &'a ModuleCache<'b>) -> typeprinter::TypePrinter<'a, 'b> {
-        let typevars = typechecker::find_all_typevars(self, false, cache);
+        let (typevars, refined_vars) = typechecker::find_all_typevars(self, false, cache);
         let mut typevar_names = HashMap::new();
 
         for typevar in typevars {
@@ -150,7 +156,8 @@ impl Type {
             }
         }
 
-        typeprinter::TypePrinter::new(self, typevar_names, true, cache)
+        let variable_names = typeprinter::variable_name_map(refined_vars, cache);
+        typeprinter::TypePrinter::new(self, typevar_names, variable_names, true, cache)
     }
 }
 

@@ -29,8 +29,9 @@
 //! These types are mostly useful for their data they hold - they only have a few simple
 //! methods on them for displaying them or converting between them.
 use crate::cache::{ ModuleCache, TraitInfoId, DefinitionInfoId, ImplScopeId, TraitBindingId, VariableId };
-use crate::types::{ Type, TypeVariableId, typeprinter::TypePrinter, PrimitiveType };
+use crate::types::{ Type, TypeVariableId, PrimitiveType };
 use crate::types::typechecker::find_all_typevars;
+use crate::types::typeprinter::{ self, TypePrinter };
 use crate::error::location::Location;
 
 use colored::Colorize;
@@ -131,18 +132,22 @@ impl RequiredTrait {
         }
     }
 
-    pub fn find_all_typevars<'b>(&self, cache: &ModuleCache<'b>) -> Vec<TypeVariableId> {
+    pub fn find_all_typevars<'b>(&self, cache: &ModuleCache<'b>) -> (Vec<TypeVariableId>, Vec<DefinitionInfoId>) {
         let mut typevars = vec![];
+        let mut variables = vec![];
+
         for typ in self.args.iter() {
-            typevars.append(&mut find_all_typevars(typ, false, cache));
+            let (mut more_typevars, mut more_vars) = find_all_typevars(typ, false, cache);
+            typevars.append(&mut more_typevars);
+            variables.append(&mut more_vars);
         }
-        typevars
+        (typevars, variables)
     }
 
     pub fn display<'a, 'b>(&self, cache: &'a ModuleCache<'b>) -> RequiredTraitPrinter<'a, 'b> {
         let mut typevar_names = HashMap::new();
         let mut current = 'a';
-        let typevars = self.find_all_typevars(cache);
+        let (typevars, variables) = self.find_all_typevars(cache);
 
         for typevar in typevars {
             if typevar_names.get(&typevar).is_none() {
@@ -152,15 +157,18 @@ impl RequiredTrait {
             }
         }
 
-        RequiredTraitPrinter { required_trait: self.clone(), typevar_names, debug: false, cache }
+        let variable_names = typeprinter::variable_name_map(variables, cache);
+        RequiredTraitPrinter { required_trait: self.clone(), typevar_names, variable_names, debug: false, cache }
     }
 
     #[allow(dead_code)]
     pub fn debug<'a, 'b>(&self, cache: &'a ModuleCache<'b>) -> RequiredTraitPrinter<'a, 'b> {
         let mut typevar_names = HashMap::new();
+        let mut variables = vec![];
 
         for typ in self.args.iter() {
-            let typevars = find_all_typevars(typ, false, cache);
+            let (typevars, mut vars) = find_all_typevars(typ, false, cache);
+            variables.append(&mut vars);
 
             for typevar in typevars {
                 if typevar_names.get(&typevar).is_none() {
@@ -169,7 +177,8 @@ impl RequiredTrait {
             }
         }
 
-        RequiredTraitPrinter { required_trait: self.clone(), typevar_names, debug: true, cache }
+        let variable_names = typeprinter::variable_name_map(variables, cache);
+        RequiredTraitPrinter { required_trait: self.clone(), typevar_names, variable_names, debug: true, cache }
     }
 }
 
@@ -178,6 +187,10 @@ pub struct RequiredTraitPrinter<'a, 'b> {
 
     /// Maps unique type variable IDs to human readable names like a, b, c, etc.
     pub typevar_names: HashMap<TypeVariableId, String>,
+
+    /// Maps unique DefinitionInfoIds to their actual names from the module cache
+    /// or a unique one in case two ever collide.
+    pub variable_names: HashMap<DefinitionInfoId, String>,
 
     /// Controls whether to show some hidden data, like lifetimes of each ref
     pub debug: bool,
@@ -191,7 +204,7 @@ impl<'a, 'b> Display for RequiredTraitPrinter<'a, 'b> {
 
         write!(f, "{}", trait_info.name.blue())?;
         for arg in self.required_trait.args.iter() {
-            let arg_printer =  TypePrinter::new(arg, self.typevar_names.clone(), self.debug, self.cache);
+            let arg_printer =  TypePrinter::new(arg, self.typevar_names.clone(), self.variable_names.clone(), self.debug, self.cache);
             write!(f, " {}", arg_printer)?;
         }
         Ok(())

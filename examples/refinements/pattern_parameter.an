@@ -1,0 +1,15 @@
+extern assert: b:bool -> unit & b
+
+// should infer foo: a:Maybe b. a == Some n -> b. b == n
+foo (Some n) = n
+
+r = foo (Some 3)
+assert (r == 3)
+
+assert (r == 4)
+foo None
+
+// args: --check --show-refinements
+// expected stdout:
+// error ... line 9
+// error ... line 10

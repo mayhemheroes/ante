@@ -180,6 +180,8 @@ pub enum Type<'a> {
     UserDefinedType(String, Location<'a>),
     TypeApplication(Box<Type<'a>>, Vec<Type<'a>>, Location<'a>),
     PairType(Box<Type<'a>>, Box<Type<'a>>, Location<'a>),
+    Refined(Box<Type<'a>>, Box<Ast<'a>>, Location<'a>),
+    Named(String, Box<Type<'a>>, Location<'a>),
 }
 
 /// The AST representation of a trait usage.

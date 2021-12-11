@@ -1,0 +1,16 @@
+
+extern assert: b:bool -> unit & b
+
+match Some 3
+| Some n -> assert (n == 3)
+| None -> assert false
+
+// TODO: Fix extern collecting named types as extern symbols.
+//       Shown in the output of `b` below as a symbol in global scope
+//       instead of function scope to `assert`
+
+// args: --check --show-refinements
+// expected stdout:
+// assert : ((b: bool) -> (unit & b))
+// b : bool
+// n : i32

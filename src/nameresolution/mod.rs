@@ -40,6 +40,7 @@ use crate::parser::{ self, ast, ast::Ast };
 use crate::types::{ TypeInfoId, TypeVariableId, Type, PrimitiveType,
                     TypeInfoBody, TypeConstructor, Field, LetBindingLevel,
                     FunctionType, INITIAL_LEVEL, STRING_TYPE };
+use crate::types::refinement::{ self, Refinement };
 use crate::types::traits::RequiredTrait;
 use crate::error::{ self, location::{ Location, Locatable } };
 use crate::cache::{ ModuleCache, DefinitionInfoId, ModuleId };
@@ -548,7 +549,7 @@ impl<'c> NameResolver {
     }
 
     /// Converts an ast::Type to a types::Type, expects all typevars to be in scope
-    pub fn convert_type(&mut self, cache: &mut ModuleCache<'c>, ast_type: &ast::Type<'c>) -> Type {
+    pub fn convert_type(&mut self, ast_type: &ast::Type<'c>, cache: &mut ModuleCache<'c>) -> Type {
         match ast_type {
             ast::Type::IntegerType(kind, _) => Type::Primitive(PrimitiveType::IntegerType(*kind)),
             ast::Type::FloatType(_) => Type::Primitive(PrimitiveType::FloatType),
@@ -558,8 +559,8 @@ impl<'c> NameResolver {
             ast::Type::BooleanType(_) => Type::Primitive(PrimitiveType::BooleanType),
             ast::Type::UnitType(_) => Type::Primitive(PrimitiveType::UnitType),
             ast::Type::FunctionType(args, ret, is_varargs, _) => {
-                let parameters = fmap(args, |arg| self.convert_type(cache, arg));
-                let return_type = Box::new(self.convert_type(cache, ret));
+                let parameters = fmap(args, |arg| self.convert_type(arg, cache));
+                let return_type = Box::new(self.convert_type(ret, cache));
                 let environment = Box::new(Type::Primitive(PrimitiveType::UnitType));
                 let is_varargs = *is_varargs;
                 Type::Function(FunctionType { parameters, return_type, environment, is_varargs })
@@ -588,17 +589,17 @@ impl<'c> NameResolver {
                 }
             },
             ast::Type::TypeApplication(constructor, args, _) => {
-                let constructor = Box::new(self.convert_type(cache, constructor));
-                let args = fmap(args, |arg| self.convert_type(cache, arg));
+                let constructor = Box::new(self.convert_type(constructor, cache));
+                let args = fmap(args, |arg| self.convert_type(arg, cache));
                 Type::TypeApplication(constructor, args)
             },
             ast::Type::PairType(first, rest, location) => {
-                let args = vec![self.convert_type(cache, first), self.convert_type(cache, rest)];
+                let args = vec![self.convert_type(first, cache), self.convert_type(rest, cache)];
 
                 let pair = match self.lookup_type(&Token::Comma.to_string(), cache) {
                     Some(id) => Type::UserDefinedType(id),
                     None => {
-                        error!(*location, "The pair type (`,`) was not found in scope, there may have been a problem while importing the prelude");
+                        error!(*location, "The pair type (`a, b`) was not found in scope, there may have been a problem while importing the prelude");
                         Type::Primitive(PrimitiveType::UnitType)
                     },
                 };
@@ -614,6 +615,89 @@ impl<'c> NameResolver {
                 let lifetime_variable = cache.next_type_variable_id(self.let_binding_level);
                 Type::Ref(lifetime_variable)
             },
+            ast::Type::Refined(typ, refinement, _) => {
+                let typ = Box::new(self.convert_type(typ, cache));
+                let refinement = self.convert_refinement(refinement, cache);
+                Type::Refined(typ, refinement)
+            }
+            ast::Type::Named(name, typ, location) => {
+                let typ = self.convert_type(typ, cache);
+                let id = self.push_definition(&name, self.in_mutable_context, cache, *location);
+                cache.definition_infos[id.0].typ = Some(typ.clone());
+                Type::Named(id, Box::new(typ))
+            },
+        }
+    }
+
+    pub fn reference_refinement_definition(&mut self, name: &str, location: Location<'c>, cache: &mut ModuleCache<'c>) -> Refinement {
+        match self.reference_definition(&name, location, cache) {
+            Some(id) => Refinement::Variable(id),
+            None => {
+                error!(location, "Undeclared variable {} used in refinement", name);
+                Refinement::Integer(0)
+            }
+        }
+    }
+
+    pub fn convert_refinement_function_call(&mut self, call: &ast::FunctionCall<'c>, cache: &mut ModuleCache<'c>) -> Refinement {
+        let args = fmap(&call.args, |arg| self.convert_refinement(arg, cache));
+        match call.function.as_ref() {
+            Ast::Variable(var) => {
+                use ast::VariableKind::*;
+                match &var.kind {
+                    Identifier(name) => {
+                        match self.reference_refinement_definition(&name, var.location, cache) {
+                            Refinement::Variable(id) => Refinement::Uninterpreted(id, args),
+                            error => error,
+                        }
+                    },
+                    TypeConstructor(name) => {
+                        match self.reference_refinement_definition(&name, var.location, cache) {
+                            Refinement::Variable(id) => Refinement::Constructor(id, args),
+                            error => error,
+                        }
+                    },
+                    Operator(token) => {
+                        let function = refinement::Primitive::from_token(token).unwrap_or_else(|| {
+                            error!(var.location, "Invalid operator in refinement, only arithmetic and boolean operators are supported");
+                            refinement::Primitive::Add
+                        });
+                        Refinement::PrimitiveCall(function, args)
+                    }
+                }
+            },
+            f => {
+                error!(call.locate(), "Invalid syntax in function call in refinement");
+                note!(f.locate(), "This expression should be a variable");
+                Refinement::Integer(0)
+            }
+        }
+    }
+
+    pub fn convert_refinement(&mut self, ast: &Ast<'c>, cache: &mut ModuleCache<'c>) -> Refinement {
+        match ast {
+            Ast::Variable(var) => {
+                let name = var.to_string();
+                self.reference_refinement_definition(&name, var.location, cache)
+            },
+            Ast::Literal(literal) => {
+                use ast::LiteralKind::*;
+                // TODO: bigint, bigfraction, possibly keep track of integer kinds, other literals
+                match literal.kind {
+                    Integer(x, _kind) => Refinement::Integer(x as i64),
+                    Float(f) => Refinement::Float(f),
+                    _ => {
+                        error!(literal.location, "Only integer/float literals are currently supported in refinements");
+                        Refinement::Integer(0)
+                    }
+                }
+            },
+            Ast::FunctionCall(call) => self.convert_refinement_function_call(call, cache),
+            _ => {
+                error!(ast.locate(), "Invalid syntax in refinement type");
+                note!(ast.locate(), "Refinement types are limited to using variables, literals, and functions");
+                Refinement::Integer(0)
+            }
         }
     }
 
@@ -639,6 +723,7 @@ impl<'c> NameResolver {
         self.resolve_all_definitions(vec![ast].into_iter(), cache, definition);
     }
 
+    // TODO: Fix extern collecting named types as extern symbols
     fn resolve_extern_definitions(&mut self, declaration: &mut ast::TypeAnnotation<'c>, cache: &mut ModuleCache<'c>) {
         self.definitions_collected.clear();
         self.auto_declare = true;
@@ -683,7 +768,7 @@ impl<'c> NameResolver {
         let mut required_traits = vec![];
         for trait_ in given {
             if let Some(trait_id) = self.lookup_trait(&trait_.name, cache) {
-                let args = fmap(&trait_.args, |arg| self.convert_type(cache, arg));
+                let args = fmap(&trait_.args, |arg| self.convert_type(arg, cache));
                 required_traits.push(RequiredTrait { trait_id, args, origin: None });
             } else {
                 error!(trait_.location, "Could not find trait {} in scope", trait_.name.blue());
@@ -910,7 +995,7 @@ fn create_variants<'c>(vec: &Variants<'c>, parent_type_id: TypeInfoId,
 
     let mut index = 0;
     fmap(vec, |(name, types, location)| {
-        let args = fmap(types, |t| resolver.convert_type(cache, t));
+        let args = fmap(types, |t| resolver.convert_type(t, cache));
 
         let id = resolver.push_definition(&name, false, cache, *location);
         cache.definition_infos[id.0].typ = Some(create_variant_constructor_type(parent_type_id, args.clone(), cache));
@@ -925,7 +1010,7 @@ type Fields<'c> = Vec<(String, ast::Type<'c>, Location<'c>)>;
 fn create_fields<'c>(vec: &Fields<'c>, resolver: &mut NameResolver, cache: &mut ModuleCache<'c>) -> Vec<Field<'c>> {
 
     fmap(vec, |(name, field_type, location)| {
-        let field_type = resolver.convert_type(cache, field_type);
+        let field_type = resolver.convert_type(field_type, cache);
 
         Field { name: name.clone(), field_type, location: *location }
     })
@@ -977,7 +1062,7 @@ impl<'c> Resolvable<'c> for ast::TypeDefinition<'c> {
                 cache.definition_infos[id.0].definition = Some(DefinitionKind::TypeConstructor { name: self.name.clone(), tag: None });
             },
             ast::TypeDefinitionBody::AliasOf(typ) => {
-                let typ = resolver.convert_type(cache, typ);
+                let typ = resolver.convert_type(typ, cache);
                 let type_info = &mut cache.type_infos[self.type_info.unwrap().0];
                 type_info.body = TypeInfoBody::Alias(typ);
             },
@@ -992,7 +1077,7 @@ impl<'c> Resolvable<'c> for ast::TypeAnnotation<'c> {
 
     fn define(&mut self, resolver: &mut NameResolver, cache: &mut ModuleCache<'c>) {
         self.lhs.define(resolver, cache);
-        let rhs = resolver.convert_type(cache, &self.rhs);
+        let rhs = resolver.convert_type(&self.rhs, cache);
         self.typ = Some(rhs);
     }
 }
@@ -1118,7 +1203,7 @@ impl<'c> Resolvable<'c> for ast::TraitDefinition<'c> {
             resolver.resolve_declarations(declaration.lhs.as_mut(), cache, definition);
 
             resolver.auto_declare = true;
-            let rhs = resolver.convert_type(cache, &declaration.rhs);
+            let rhs = resolver.convert_type(&declaration.rhs, cache);
             resolver.auto_declare = false;
             declaration.typ = Some(rhs);
         }
@@ -1154,7 +1239,7 @@ impl<'c> Resolvable<'c> for ast::TraitImpl<'c> {
 
         resolver.push_type_variable_scope();
         resolver.auto_declare = true;
-        self.trait_arg_types = fmap(&self.trait_args, |arg| resolver.convert_type(cache, arg));
+        self.trait_arg_types = fmap(&self.trait_args, |arg| resolver.convert_type(arg, cache));
         resolver.auto_declare = false;
 
         let trait_info = &cache.trait_infos[trait_id.0];

@@ -561,6 +561,8 @@ impl<'g> Generator<'g> {
             Ref(_) => Self::ptr_size(),
 
             ForAll(_, typ) => self.size_of_type(typ, cache),
+            Refined(typ, _) => self.size_of_type(typ, cache),
+            Named(_, typ) => self.size_of_type(typ, cache),
         }
     }
 
@@ -707,6 +709,8 @@ impl<'g> Generator<'g> {
             },
 
             ForAll(_, typ) => self.convert_type(typ, cache),
+            Refined(typ, _) => self.convert_type(typ, cache),
+            Named(_, typ) => self.convert_type(typ, cache),
         }
     }
 
@@ -854,8 +858,10 @@ impl<'g> Generator<'g> {
                 }
             }
 
-            // unwrap foralls
+            // get rid of refinements, foralls, and names, we don't need them anymore anyway
             ForAll(_, typ) => self.follow_bindings(typ, cache),
+            Refined(typ, _) => self.follow_bindings(typ, cache),
+            Named(_, typ) => self.follow_bindings(typ, cache),
         }
     }
 

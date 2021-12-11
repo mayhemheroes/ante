@@ -1,0 +1,9 @@
+
+id x = x
+
+id 3
+id "four"
+
+// args: --check --show-refinements
+// expected stdout:
+// id : (forall a. ((x: a) -> ((b: a) & (x == b))))

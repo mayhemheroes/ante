@@ -246,6 +246,48 @@ pub fn delimited_trailing<'a, 'b: 'a, F, G, FResult, GResult>(f: F, g: G) -> imp
     }
 }
 
+/// Match many1(delimited(f, g)) followed by an optional trailing g
+pub fn delimited_trailing1<'a, 'b: 'a, F, G, FResult, GResult>(f: F, g: G) -> impl Fn(Input<'a, 'b>) -> ParseResult<'a, 'b, Vec<FResult>> where
+    F: Fn(Input<'a, 'b>) -> ParseResult<'a, 'b, FResult>,
+    G: Fn(Input<'a, 'b>) -> ParseResult<'a, 'b, GResult>
+{
+    move |mut input| {
+        let mut results = Vec::new();
+        let start = input[0].1;
+
+        let (new_input, t, _) = f(input)?;
+        input = new_input;
+        results.push(t);
+
+        let (new_input, _, mut end) = g(input)?;
+        input = new_input;
+
+        loop {
+            match f(input) {
+                Ok((new_input, t, location)) => {
+                    input = new_input;
+                    end = location;
+                    results.push(t);
+                },
+                Err(ParseError::Fatal(token)) => return Err(ParseError::Fatal(token)),
+                Err(_) => break,
+            }
+
+            match g(input) {
+                Ok((new_input, _, location)) => {
+                    input = new_input;
+                    end = location;
+                },
+                Err(ParseError::Fatal(token)) => return Err(ParseError::Fatal(token)),
+                Err(_) => break,
+            }
+        }
+
+        let location = start.union(end);
+        Ok((input, results, location))
+    }
+}
+
 /// Match begin, middle, then end in a sequence.
 pub fn bounded<'a, 'b: 'a, F, FResult>(begin: Token, f: F, end: Token) -> impl FnOnce(Input<'a, 'b>) -> ParseResult<'a, 'b, FResult> where
     F: FnOnce(Input<'a, 'b>) -> ParseResult<'a, 'b, FResult>,

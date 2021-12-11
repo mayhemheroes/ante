@@ -24,10 +24,10 @@ pub mod pretty_printer;
 mod desugar;
 
 use crate::lexer::token::Token;
-use ast::{ Ast, Type, Trait, TypeDefinitionBody };
-use error::{ ParseError, ParseResult };
+use crate::parser::error::{ ParseError, ParseResult };
 use crate::error::location::Location;
-use combinators::*;
+use crate::parser::ast::{ Ast, Type, Trait, TypeDefinitionBody };
+use crate::parser::combinators::*;
 
 type AstResult<'a, 'b> = ParseResult<'a, 'b, Ast<'b>>;
 
@@ -109,10 +109,12 @@ parser!(function_definition location -> 'b ast::Definition<'b> =
     }
 );
 
-parser!(varargs location -> 'b () =
+parser!(parse_varargs_and_return_type location -> 'b ast::Type<'b> =
     _ <- expect(Token::Range);
     _ <- expect(Token::MemberAccess);
-    ()
+    _ !<- expect(Token::RightArrow);
+    return_type <- parse_type;
+    return_type
 );
 
 parser!(function_return_type location -> 'b ast::Type<'b> =
@@ -169,7 +171,7 @@ parser!(type_annotation_pattern loc =
     Ast::type_annotation(lhs, rhs, loc)
 );
 
-fn parenthesized_irrefutable_pattern<'a, 'b>(input: Input<'a, 'b>) -> AstResult<'a, 'b> {
+fn parenthesized_pattern<'a, 'b>(input: Input<'a, 'b>) -> AstResult<'a, 'b> {
     parenthesized(or(&[operator, pattern], "pattern"))(input)
 }
 
@@ -502,16 +504,23 @@ parser!(type_annotation loc =
 fn parse_type<'a, 'b>(input: Input<'a, 'b>) -> ParseResult<'a, 'b, Type<'b>> {
     or(&[
         function_type,
-        type_application,
-        pair_type,
-        basic_type
+        function_arg_type,
     ], &"type")(input)
 }
 
 fn function_arg_type<'a, 'b>(input: Input<'a, 'b>) -> ParseResult<'a, 'b, Type<'b>> {
     or(&[
-        type_application,
+        named_type,
+        refined_type,
         pair_type,
+        type_application,
+        basic_type
+    ], &"type")(input)
+}
+
+fn single_type<'a, 'b>(input: Input<'a, 'b>) -> ParseResult<'a, 'b, Type<'b>> {
+    or(&[
+        type_application,
         basic_type
     ], &"type")(input)
 }
@@ -519,6 +528,7 @@ fn function_arg_type<'a, 'b>(input: Input<'a, 'b>) -> ParseResult<'a, 'b, Type<'
 fn parse_type_no_pair<'a, 'b>(input: Input<'a, 'b>) -> ParseResult<'a, 'b, Type<'b>> {
     or(&[
         function_type,
+        refined_type,
         type_application,
         basic_type
     ], &"type")(input)
@@ -621,7 +631,7 @@ fn pattern_argument<'a, 'b>(input: Input<'a, 'b>) -> AstResult<'a, 'b> {
         Token::CharLiteral(_) => parse_char(input),
         Token::BooleanLiteral(_) => parse_bool(input),
         Token::UnitLiteral => unit(input),
-        Token::ParenthesisLeft => parenthesized_irrefutable_pattern(input),
+        Token::ParenthesisLeft => parenthesized_pattern(input),
         Token::TypeName(_) => variant(input),
         _ => Err(ParseError::InRule(&"pattern argument", input[0].1)),
     }
@@ -686,11 +696,34 @@ parser!(unit loc =
 );
 
 parser!(function_type loc -> 'b Type<'b> =
-    args <- delimited_trailing(function_arg_type, expect(Token::Subtract));
-    varargs <- maybe(varargs);
-    _ <- expect(Token::RightArrow);
-    return_type <- parse_type;
-    Type::FunctionType(args, Box::new(return_type), varargs.is_some(), loc)
+    args <- delimited_trailing1(function_arg_type, expect(Token::RightArrow));
+    varargs_return_type <- maybe(parse_varargs_and_return_type);
+
+    match varargs_return_type {
+        Some(return_type) => {
+            Type::FunctionType(args, Box::new(return_type), true, loc)
+        }
+        None => {
+            assert!(args.len() >= 2);
+            let mut args = args;
+            let return_type = args.pop().unwrap();
+            Type::FunctionType(args, Box::new(return_type), false, loc)
+        },
+    }
+);
+
+parser!(refined_type loc -> 'b Type<'b> =
+    typ <- single_type;
+    _ <- expect(Token::Ampersand);
+    refinement <- expression;
+    Type::Refined(Box::new(typ), Box::new(refinement), loc)
+);
+
+parser!(named_type loc -> 'b Type<'b> =
+    name <- identifier;
+    _ <- expect(Token::Colon);
+    typ <- function_arg_type;
+    Type::Named(name, Box::new(typ), loc)
 );
 
 parser!(type_application loc -> 'b Type<'b> =
@@ -700,9 +733,9 @@ parser!(type_application loc -> 'b Type<'b> =
 );
 
 parser!(pair_type loc -> 'b Type<'b> =
-    first <- basic_type;
+    first <- single_type;
     _ <- expect(Token::Comma);
-    rest !<- parse_type;
+    rest !<- single_type;
     Type::PairType(Box::new(first), Box::new(rest), loc)
 );
 
