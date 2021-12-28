@@ -40,7 +40,7 @@ use crate::parser::{ self, ast, ast::Ast };
 use crate::types::{ TypeInfoId, TypeVariableId, Type, PrimitiveType,
                     TypeInfoBody, TypeConstructor, Field, LetBindingLevel,
                     FunctionType, INITIAL_LEVEL, STRING_TYPE };
-use crate::types::refinement::{ self, Refinement };
+use crate::refinements::types::{ Refinement, Primitive };
 use crate::types::traits::RequiredTrait;
 use crate::error::{ self, location::{ Location, Locatable } };
 use crate::cache::{ ModuleCache, DefinitionInfoId, ModuleId };
@@ -658,9 +658,9 @@ impl<'c> NameResolver {
                         }
                     },
                     Operator(token) => {
-                        let function = refinement::Primitive::from_token(token).unwrap_or_else(|| {
+                        let function = Primitive::from_token(token).unwrap_or_else(|| {
                             error!(var.location, "Invalid operator in refinement, only arithmetic and boolean operators are supported");
-                            refinement::Primitive::Add
+                            Primitive::Add
                         });
                         Refinement::PrimitiveCall(function, args)
                     }

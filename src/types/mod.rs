@@ -4,6 +4,7 @@
 //! the representation of `Type`s - which represent any Type in ante's
 //! type system - and `TypeInfo`s - which hold more information about the
 //! definition of a user-defined type.
+use crate::refinements::types::Refinement;
 use crate::cache::{ ModuleCache, DefinitionInfoId };
 use crate::error::location::{ Locatable, Location };
 use crate::lexer::token::IntegerKind;
@@ -12,7 +13,6 @@ use crate::lifetimes;
 use std::collections::HashMap;
 
 pub mod pattern;
-pub mod refinement;
 pub mod typed;
 pub mod typechecker;
 pub mod traitchecker;
@@ -103,7 +103,7 @@ pub enum Type {
     /// just type variables of unknown types yet to be inferenced.
     ForAll(Vec<TypeVariableId>, Box<Type>),
 
-    Refined(Box<Type>, refinement::Refinement),
+    Refined(Box<Type>, Refinement),
 
     Named(DefinitionInfoId, Box<Type>),
 }

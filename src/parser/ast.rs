@@ -43,14 +43,14 @@ pub enum LiteralKind {
     Unit,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Literal<'a> {
     pub kind: LiteralKind,
     pub location: Location<'a>,
     pub typ: Option<types::Type>
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum VariableKind {
     Identifier(String),
     Operator(Token),
@@ -58,7 +58,7 @@ pub enum VariableKind {
 }
 
 /// a, b, (+), Some, etc.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Variable<'a> {
     pub kind: VariableKind,
     pub location: Location<'a>,
@@ -87,7 +87,7 @@ pub struct Variable<'a> {
 
 /// \a b. expr
 /// Function definitions are also desugared to a ast::Definition with a ast::Lambda as its body
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Lambda<'a> {
     pub args: Vec<Ast<'a>>,
     pub body: Box<Ast<'a>>,
@@ -104,7 +104,7 @@ pub struct Lambda<'a> {
 }
 
 /// foo a b c
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FunctionCall<'a> {
     pub function: Box<Ast<'a>>,
     pub args: Vec<Ast<'a>>,
@@ -124,7 +124,7 @@ impl<'a> FunctionCall<'a> {
 
 /// foo = 23
 /// pattern a b = expr
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Definition<'a> {
     pub pattern: Box<Ast<'a>>,
     pub expr: Box<Ast<'a>>,
@@ -136,7 +136,7 @@ pub struct Definition<'a> {
 }
 
 /// if condition then expression else expression
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct If<'a> {
     pub condition: Box<Ast<'a>>,
     pub then: Box<Ast<'a>>,
@@ -150,7 +150,7 @@ pub struct If<'a> {
 /// | pattern2 -> branch2
 /// ...
 /// | patternN -> branchN
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Match<'a> {
     pub expression: Box<Ast<'a>>,
     pub branches: Vec<(Ast<'a>, Ast<'a>)>,
@@ -165,7 +165,7 @@ pub struct Match<'a> {
 
 /// Type nodes in the AST, different from the representation of types during type checking.
 /// PointerType and potentially UserDefinedType are actually type constructors
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Type<'a> {
     IntegerType(IntegerKind, Location<'a>),
     FloatType(Location<'a>),
@@ -187,14 +187,14 @@ pub enum Type<'a> {
 /// The AST representation of a trait usage.
 /// A trait's definition would be a TraitDefinition node.
 /// This struct is used in e.g. `given` to list the required traits.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Trait<'a> {
     pub name: String,
     pub args: Vec<Type<'a>>,
     pub location: Location<'a>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum TypeDefinitionBody<'a> {
     UnionOf(Vec<(String, Vec<Type<'a>>, Location<'a>)>),
     StructOf(Vec<(String, Type<'a>, Location<'a>)>),
@@ -202,7 +202,7 @@ pub enum TypeDefinitionBody<'a> {
 }
 
 /// type Name arg1 arg2 ... argN = definition
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TypeDefinition<'a> {
     pub name: String,
     pub args: Vec<String>,
@@ -213,7 +213,7 @@ pub struct TypeDefinition<'a> {
 }
 
 /// lhs : rhs
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TypeAnnotation<'a> {
     pub lhs: Box<Ast<'a>>,
     pub rhs: Type<'a>,
@@ -222,7 +222,7 @@ pub struct TypeAnnotation<'a> {
 }
 
 /// import Path1 . Path2 ... PathN
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Import<'a> {
     pub path: Vec<String>,
     pub location: Location<'a>,
@@ -235,7 +235,7 @@ pub struct Import<'a> {
 ///     declaration2
 ///     ...
 ///     declarationN
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TraitDefinition<'a> {
     pub name: String,
     pub args: Vec<String>,
@@ -257,7 +257,7 @@ pub struct TraitDefinition<'a> {
 ///     definition2
 ///     ...
 ///     definitionN
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TraitImpl<'a> {
     pub trait_name: String,
     pub trait_args: Vec<Type<'a>>,
@@ -271,7 +271,7 @@ pub struct TraitImpl<'a> {
 }
 
 /// return expression
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Return<'a> {
     pub expression: Box<Ast<'a>>,
     pub location: Location<'a>,
@@ -282,7 +282,7 @@ pub struct Return<'a> {
 /// statement2
 /// ...
 /// statementN
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Sequence<'a> {
     pub statements: Vec<Ast<'a>>,
     pub location: Location<'a>,
@@ -296,7 +296,7 @@ pub struct Sequence<'a> {
 ///     declaration2
 ///     ...
 ///     declarationN
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Extern<'a> {
     pub declarations: Vec<TypeAnnotation<'a>>,
     pub level: Option<LetBindingLevel>,
@@ -305,7 +305,7 @@ pub struct Extern<'a> {
 }
 
 /// lhs.field
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MemberAccess<'a> {
     pub lhs: Box<Ast<'a>>,
     pub field: String,
@@ -314,7 +314,7 @@ pub struct MemberAccess<'a> {
 }
 
 /// lhs := rhs
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Assignment<'a> {
     pub lhs: Box<Ast<'a>>,
     pub rhs: Box<Ast<'a>>,
@@ -322,7 +322,7 @@ pub struct Assignment<'a> {
     pub typ: Option<types::Type>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Ast<'a> {
     Literal(Literal<'a>),
     Variable(Variable<'a>),
@@ -413,6 +413,18 @@ impl<'a> Ast<'a> {
 
     pub fn variable(name: String, location: Location<'a>) -> Ast<'a> {
         Ast::Variable(Variable { kind: VariableKind::Identifier(name), location, definition: None, id: None, impl_scope: None, trait_binding: None, typ: None })
+    }
+
+    pub fn variable_with_definition(name: String, definition: DefinitionInfoId, location: Location<'a>) -> Ast<'a> {
+        Ast::Variable(Variable {
+            kind: VariableKind::Identifier(name),
+            location,
+            definition: Some(definition),
+            id: None,
+            impl_scope: None,
+            trait_binding: None,
+            typ: None,
+        })
     }
 
     pub fn operator(operator: Token, location: Location<'a>) -> Ast<'a> {

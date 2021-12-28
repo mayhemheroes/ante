@@ -323,6 +323,13 @@ impl<'a> ModuleCache<'a> {
         cache
     }
 
+    /// Create a fresh variable with the given type for use internally.
+    pub fn fresh_internal_var<'c>(&mut self, typ: Type) -> DefinitionInfoId {
+        let id = self.push_definition("internal", false, Location::builtin());
+        self.definition_infos[id.0].typ = Some(typ);
+        id
+    }
+
     pub fn push_filepath(&mut self, path: PathBuf) -> &'a Path {
         let index = self.filepaths.len();
         self.filepaths.push(path);

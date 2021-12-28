@@ -7,7 +7,7 @@ use crate::types::{ Type, TypeVariableId, TypeInfoId, PrimitiveType,
                     FunctionType, TypeBinding };
 use crate::types::traits::{ RequiredTrait, RequiredTraitPrinter };
 use crate::types::typechecker::find_all_typevars;
-use crate::types::refinement::Refinement;
+use crate::refinements::types::Refinement;
 use crate::cache::{ ModuleCache, DefinitionInfoId };
 use crate::util::{ join_with, reinterpret_from_bits };
 
@@ -284,6 +284,12 @@ impl<'a, 'b> TypePrinter<'a, 'b> {
                 }
                 write!(f, ")")
             },
+            Refinement::Boolean(b) => write!(f, "{}", *b),
+            Refinement::Unit => write!(f, "()"),
+            Refinement::Forall(x, t, e) => {
+                write!(f, "forall {}:{:?}. ", self.variable_names[x], t)?;
+                self.fmt_refinement(e.as_ref(), f)
+            }
         }
     }
 
