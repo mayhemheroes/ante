@@ -327,6 +327,7 @@ impl<'a> ModuleCache<'a> {
     pub fn fresh_internal_var<'c>(&mut self, typ: Type) -> DefinitionInfoId {
         let id = self.push_definition("internal", false, Location::builtin());
         self.definition_infos[id.0].typ = Some(typ);
+        self.definition_infos[id.0].definition = Some(DefinitionKind::MatchPattern);
         id
     }
 

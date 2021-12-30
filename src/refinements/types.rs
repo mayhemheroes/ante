@@ -27,11 +27,8 @@ pub enum Refinement {
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum RefinementType {
     Base(BaseType, Option<(DefinitionInfoId, Refinement)>),
-    // TODO: Should Function be a BaseType instead so that this
-    // variant can be merged with TypeApplication to be represented
-    // as TypeApplication(Function, args) ?
     Function(Vec<NamedType>, Box<RefinementType>),
-    TypeApplication(BaseType, Vec<NamedType>),
+    TypeApplication(Box<RefinementType>, Vec<NamedType>),
     ForAll(Vec<TypeVariableId>, Box<RefinementType>),
 }
 
@@ -108,7 +105,11 @@ impl Refinement {
     }
 
     pub fn and(self, other: Refinement) -> Refinement {
-        Refinement::PrimitiveCall(Primitive::And, vec![self, other])
+        match (self, other) {
+            (Refinement::Boolean(true), other) => other,
+            (first, Refinement::Boolean(true)) => first,
+            (first, second) => Refinement::PrimitiveCall(Primitive::And, vec![first, second]),
+        }
     }
 
     pub fn eq(self, other: Refinement) -> Refinement {
@@ -211,9 +212,10 @@ impl RefinementType {
                 let ret = Box::new(ret.substitute(id, &replacement));
                 Function(args, ret)
             }
-            TypeApplication(base, args) => {
+            TypeApplication(constructor, args) => {
+                let constructor = constructor.substitute(id, replacement);
                 let args = fmap(args, |(arg_id, arg)| (replace_id(*arg_id), arg.substitute(id, &replacement)));
-                TypeApplication(*base, args)
+                TypeApplication(Box::new(constructor), args)
             }
             ForAll(vars, typ) => ForAll(vars.clone(), Box::new(typ.substitute(id, replacement))),
         }
@@ -234,12 +236,15 @@ impl RefinementType {
 
     // Is self a subtype of other?
     // Returns a set of constraints that would make this true
-    pub fn check_subtype<'c>(&self, other: &RefinementType, _cache: &ModuleCache<'c>) -> Refinement {
+    pub fn check_subtype<'c>(&self, other: &RefinementType, context: &mut RefinementContext, cache: &ModuleCache<'c>) -> Refinement {
         match (self, other) {
-            (RefinementType::Base(_, _), RefinementType::Base(_, _)) => todo!(),
-            (RefinementType::Function(_, _), RefinementType::Function(_, _)) => todo!(),
-            (RefinementType::TypeApplication(_, _), RefinementType::TypeApplication(_, _)) => todo!(),
-            (RefinementType::ForAll(_, _), RefinementType::ForAll(_, _)) => todo!(),
+            (RefinementType::Base(b1, Some((id1, r1))), RefinementType::Base(b2, Some((id2, r2)))) => check_subtype_base(*b1, *id1, r1, *b2, *id2, r2),
+            (RefinementType::Base(b1, None), RefinementType::Base(b2, Some((id2, r2)))) => r2.clone(),
+            (RefinementType::Base(b1, Some((id1, r1))), RefinementType::Base(b2, None)) => r1.clone(),
+            (RefinementType::Base(b1, None), RefinementType::Base(b2, None)) => Refinement::none(),
+            (RefinementType::Function(args1, ret1), RefinementType::Function(args2, ret2)) =>
+                check_subtype_fun(context, args1, ret1, args2, ret2, cache),
+            (RefinementType::TypeApplication(c1, args1), RefinementType::TypeApplication(c2, args2)) => todo!(),
             (a, b) => unreachable!("check_subtype found an uncaught type error while checking {:?} and {:?}", a, b),
         }
     }
@@ -282,7 +287,7 @@ fn entails(context: &RefinementContext, c: &Refinement) -> Refinement {
 // forall (v1:b). p1 => p2[v2 := v1]
 // -------------------
 // b{v1:p1} <: b{v2:p2}
-fn check_subtype_base(_b1: BaseType, v1: DefinitionInfoId, p1: &Refinement, _b2: BaseType, v2: DefinitionInfoId, p2: Refinement) -> Refinement {
+fn check_subtype_base(_b1: BaseType, v1: DefinitionInfoId, p1: &Refinement, _b2: BaseType, v2: DefinitionInfoId, p2: &Refinement) -> Refinement {
     let q = p2.substitute_var(v2, v1);
     Refinement::implies(p1.clone(), q)
 }
@@ -292,15 +297,27 @@ fn check_subtype_base(_b1: BaseType, v1: DefinitionInfoId, p1: &Refinement, _b2:
 // s2 <: s1    x2:s2 |- t1[x1:=x2] <: t2 
 // -------------------------------------
 // x1:s1 -> t1 <: x2:s2 -> t2
-fn check_subtype_fun<'c>(context: &mut RefinementContext, x1: DefinitionInfoId, s1: &RefinementType,
-    t1: &RefinementType, x2: DefinitionInfoId, s2: &RefinementType, t2: &RefinementType, cache: &ModuleCache<'c>) -> Refinement
+fn check_subtype_fun<'c>(context: &mut RefinementContext, args1: &[NamedType],
+    t1: &RefinementType, args2: &[NamedType], t2: &RefinementType, cache: &ModuleCache<'c>) -> Refinement
 {
-    let r1 = s2.check_subtype(s1, cache);
-    context.insert_refinement(x2, s2.clone());
-    let t1 = t1.substitute_var(x1, x2);
-    let r2 = t1.check_subtype(t2, cache);
-    context.remove_refinement(x2);
-    r1.and(r2)
+    let mut t1 = t1.clone();
+    let mut r = Refinement::none();
+
+    for ((x1, s1), (x2, s2)) in args1.into_iter().zip(args2) {
+        r = r.and(s2.check_subtype(s1, context, cache));
+        context.insert_refinement(*x2, s2.clone());
+
+        t1 = t1.substitute_var(*x1, *x2);
+    }
+
+
+    let r2 = t1.check_subtype(t2, context, cache);
+
+    for ((x1, s1), (x2, s2)) in args1.into_iter().zip(args2) {
+        context.remove_refinement(*x2);
+    }
+
+    r.and(r2)
 }
 
 // [Sub-TCon] 

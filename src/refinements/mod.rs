@@ -10,7 +10,10 @@ pub mod types;
 pub fn refine<'c>(ast: &ast::Ast<'c>, output_refinements: bool, cache: &mut ModuleCache<'c>) {
     let mut context = RefinementContext::new();
     let refinement = check(ast, &RefinementType::unit(), &mut context, cache);
-    println!("{}", refinement);
+
+    if output_refinements {
+        println!("{}", refinement);
+    }
 
     // for binding in refinements.bindings {
     //     context.solver.assert(binding);
@@ -58,7 +61,7 @@ fn synthesize<'c>(ast: &ast::Ast<'c>, context: &mut RefinementContext, cache: &m
         Sequence(sequence) => synthesize_sequence(sequence, context, cache),
         other => {
             println!("default synth on {}", ast);
-            (Refinement::none(), context.convert_type(other.get_type().unwrap()))
+            (Refinement::none(), context.convert_type(other.get_type().unwrap(), cache))
         }
     }
 }
@@ -69,7 +72,7 @@ fn synthesize<'c>(ast: &ast::Ast<'c>, context: &mut RefinementContext, cache: &m
 //           G |- e <== t
 fn check_synthesize<'c>(ast: &ast::Ast<'c>, t: &RefinementType, context: &mut RefinementContext, cache: &mut ModuleCache<'c>) -> Refinement {
     let (r1, s) = synthesize(ast, context, cache);
-    let r2 = s.check_subtype(t, cache);
+    let r2 = s.check_subtype(t, context, cache);
     r1.and(r2)
 }
 
@@ -87,7 +90,8 @@ fn synthesize_literal<'c>(ast: &ast::Literal<'c>, context: &mut RefinementContex
         Unit => Some(Refinement::Unit),
     };
 
-    match context.convert_type(typ) {
+    // Add the constraint this == value for the literal's refined type
+    match context.convert_type(typ, cache) {
         RefinementType::Base(b, r) => {
             assert!(r.is_none());
             let refinement = value.map(|value| {
@@ -105,7 +109,8 @@ fn synthesize_literal<'c>(ast: &ast::Literal<'c>, context: &mut RefinementContex
 // ----------------- 
 //  G |- x ==> G(x)
 fn synthesize_variable<'c>(ast: &ast::Variable<'c>, context: &mut RefinementContext, cache: &mut ModuleCache<'c>) -> (Refinement, RefinementType) {
-    (Refinement::Boolean(true), context.lookup_or_create(ast.definition.unwrap(), cache))
+    dbg!(ast);
+    (Refinement::none(), context.lookup_or_create(ast.definition.unwrap(), cache))
 }
 
 // [Chk-Lam] 
@@ -153,10 +158,11 @@ fn synthesize_call<'c>(ast: &ast::FunctionCall<'c>, context: &mut RefinementCont
 //  -------------------------------------------
 //      G |- let x = e in e' <== t'
 //
-fn check_definition<'c>(ast: &ast::Definition<'c>, _typ: &RefinementType, context: &mut RefinementContext, cache: &mut ModuleCache<'c>) -> Refinement {
+fn check_definition<'c>(ast: &ast::Definition<'c>, _: &RefinementType, context: &mut RefinementContext, cache: &mut ModuleCache<'c>) -> Refinement {
     let (r, s) = synthesize(ast.expr.as_ref(), context, cache);
-    context.bind_pattern(ast.pattern.as_ref(), s);
-    r
+    // context.bind_pattern(ast.pattern.as_ref(), s);
+    let r = r.and(check(ast.pattern.as_ref(), &s, context, cache));
+    r.and(check(ast.expr.as_ref(), &s, context, cache))
     // Ante's bindings have no `in e'`, the corresponding step is done in ast::Sequence::check
 }
 
@@ -173,10 +179,16 @@ fn check_if<'c>(ast: &ast::If<'c>, typ: &RefinementType, context: &mut Refinemen
     let rt = r.clone().and(v.clone());
     let rf = r.clone().and(v.not());
 
-    r = r.and(context.with_refinement(v_id, rt, cache, |ctx| check(ast.then.as_ref(), typ, ctx, cache)));
+    let t = RefinementType::bool_refined(rt, cache);
+    context.insert_refinement(v_id, t);
+    r = r.and(check(ast.then.as_ref(), typ, context, cache));
+    context.remove_refinement(v_id);
 
     if let Some(otherwise) = ast.otherwise.as_ref() {
-        r = r.and(context.with_refinement(v_id, rf, cache, |ctx| check(otherwise.as_ref(), typ, ctx, cache)));
+        let t = RefinementType::bool_refined(rf, cache);
+        context.insert_refinement(v_id, t);
+        r = r.and(check(otherwise.as_ref(), typ, context, cache));
+        context.remove_refinement(v_id);
     }
 
     r
@@ -212,7 +224,7 @@ fn check_alt<'c>(y: &ast::Ast<'c>, pattern: &ast::Ast<'c>, e: &ast::Ast<'c>, t: 
 // ---------------------------
 // G |- e:s ==> t
 fn synthesize_type_annotation<'c>(ast: &ast::TypeAnnotation<'c>, context: &mut RefinementContext, cache: &mut ModuleCache<'c>) -> (Refinement, RefinementType) {
-    let t = context.convert_type(ast.typ.as_ref().unwrap());
+    let t = context.convert_type(ast.typ.as_ref().unwrap(), cache);
     let r = check(ast.lhs.as_ref(), &t, context, cache);
     (r, t)
 }
@@ -228,8 +240,9 @@ fn synthesize_return<'c>(ast: &ast::Return<'c>, context: &mut RefinementContext,
 fn check_sequence<'c>(ast: &ast::Sequence<'c>, typ: &RefinementType, context: &mut RefinementContext, cache: &mut ModuleCache<'c>) -> Refinement {
     let mut r = Refinement::Boolean(true);
 
+    let unit = RefinementType::unit();
     for statement in ast.statements.iter().take(ast.statements.len() - 1) {
-        r = r.and(synthesize(statement, context, cache).0);
+        r = r.and(check(statement, &unit, context, cache));
     }
 
     let last = ast.statements.last().unwrap();
@@ -239,8 +252,9 @@ fn check_sequence<'c>(ast: &ast::Sequence<'c>, typ: &RefinementType, context: &m
 fn synthesize_sequence<'c>(ast: &ast::Sequence<'c>, context: &mut RefinementContext, cache: &mut ModuleCache<'c>) -> (Refinement, RefinementType) {
     let mut r = Refinement::Boolean(true);
 
+    let unit = RefinementType::unit();
     for statement in ast.statements.iter().take(ast.statements.len() - 1) {
-        r = r.and(synthesize(statement, context, cache).0);
+        r = r.and(check(statement, &unit, context, cache));
     }
 
     let last = ast.statements.last().unwrap();

@@ -142,9 +142,7 @@ pub fn main() {
         print_definition_types(&cache);
     }
 
-    if args.is_present("show-refinements") {
-        print_definition_types(&cache);
-    }
+    refinements::refine(ast, args.is_present("show-refinements"), &mut cache);
 
     if args.is_present("check") {
         return;
