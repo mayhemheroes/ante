@@ -12,6 +12,7 @@ difference = "2.0.0"
 goldentests = "0.3.8"
 inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm12-0"] }
 dirs = "3.0"
+z3-sys = "0.6.3"
 
 [build-dependencies]
 dirs = "3.0"

@@ -1,6 +1,13 @@
 use std::collections::HashMap;
 
-use crate::{cache::{DefinitionInfoId, ModuleCache}, error::location::Locatable, parser::ast::Ast, refinements::types::{BaseType, Refinement, RefinementType}, types::{Type, typed::Typed}, util::fmap};
+use crate::{
+    cache::{DefinitionInfoId, ModuleCache},
+    error::location::Locatable,
+    parser::ast::Ast,
+    refinements::types::{BaseType, Refinement, RefinementType},
+    types::{Type, typed::Typed},
+    util::fmap
+};
 
 pub struct RefinementContext {
     definitions: HashMap<DefinitionInfoId, RefinementType>,

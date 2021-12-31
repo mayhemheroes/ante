@@ -5,14 +5,28 @@ use crate::refinements::types::{Refinement, RefinementType};
 use crate::types::typed::Typed;
 
 mod context;
+mod z3;
+mod model_parser;
 pub mod types;
 
 pub fn refine<'c>(ast: &ast::Ast<'c>, output_refinements: bool, cache: &mut ModuleCache<'c>) {
     let mut context = RefinementContext::new();
     let refinement = check(ast, &RefinementType::unit(), &mut context, cache);
 
+    let z3_context = z3::Context::new();
+    let condition = z3_context.convert_refinement(&refinement, cache);
+
     if output_refinements {
         println!("{}", refinement);
+    }
+
+    let solver = z3::Solver::new(z3_context);
+    match solver.check() {
+        z3::SatResult::Sat(model) => {
+            println!("Could not prove condition");
+        },
+        z3::SatResult::Unsat => println!("Proved condition"),
+        z3::SatResult::Unknown(reason) => println!("Unknown error: {}", reason),
     }
 
     // for binding in refinements.bindings {
@@ -109,7 +123,6 @@ fn synthesize_literal<'c>(ast: &ast::Literal<'c>, context: &mut RefinementContex
 // ----------------- 
 //  G |- x ==> G(x)
 fn synthesize_variable<'c>(ast: &ast::Variable<'c>, context: &mut RefinementContext, cache: &mut ModuleCache<'c>) -> (Refinement, RefinementType) {
-    dbg!(ast);
     (Refinement::none(), context.lookup_or_create(ast.definition.unwrap(), cache))
 }
 
