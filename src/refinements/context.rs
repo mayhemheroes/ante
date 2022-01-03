@@ -1,13 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{
-    cache::{DefinitionInfoId, ModuleCache},
-    error::location::Locatable,
-    parser::ast::Ast,
-    refinements::types::{BaseType, Refinement, RefinementType},
-    types::{Type, typed::Typed},
-    util::fmap
-};
+use crate::{cache::{DefinitionInfoId, ModuleCache}, error::location::Locatable, parser::ast::Ast, refinements::types::{BaseType, Refinement, RefinementType}, types::{Type, TypeBinding, typed::Typed}, util::fmap};
 
 pub struct RefinementContext {
     definitions: HashMap<DefinitionInfoId, RefinementType>,
@@ -42,16 +35,6 @@ impl RefinementContext {
         self.definitions.remove(&id);
     }
 
-    pub fn with_refinement<'c, F, T>(&mut self, id: DefinitionInfoId, r: Refinement, cache: &mut ModuleCache<'c>, f: F) -> T
-        where F: FnOnce(&mut Self) -> T
-    {
-        let t = RefinementType::bool_refined(r, cache);
-        self.definitions.insert(id, t);
-        let ret = f(self);
-        self.definitions.remove(&id);
-        ret
-    }
-
     /// Convert a term into a term that can be immediately
     /// substituted into a Refinement (i.e. it is a Variable or Literal)
     pub fn named<'c>(ast: &Ast<'c>, cache: &mut ModuleCache<'c>) -> (Ast<'c>, Refinement, DefinitionInfoId) {
@@ -74,7 +57,31 @@ impl RefinementContext {
 
     fn convert_type_rec<'c>(&mut self, typ: &Type, name: Option<DefinitionInfoId>, refinement: Option<Refinement>, cache: &mut ModuleCache<'c>) -> RefinementType {
         match typ {
-            Type::Primitive(p) => RefinementType::Base(BaseType::Primitive(*p), None),
+            Type::Primitive(p) => {
+                let id = name.unwrap_or_else(|| cache.fresh_internal_var(typ.clone()));
+                let refinement = refinement.unwrap_or(Refinement::true_());
+                RefinementType::Base(BaseType::Primitive(*p), id, refinement)
+            },
+            Type::UserDefinedType(type_id) => {
+                let id = name.unwrap_or_else(|| cache.fresh_internal_var(typ.clone()));
+                let refinement = refinement.unwrap_or(Refinement::true_());
+                RefinementType::Base(BaseType::UserDefinedType(*type_id), id, refinement)
+            }
+            Type::Ref(lifetime) => {
+                let id = name.unwrap_or_else(|| cache.fresh_internal_var(typ.clone()));
+                let refinement = refinement.unwrap_or(Refinement::true_());
+                RefinementType::Base(BaseType::Ref(*lifetime), id, refinement)
+            }
+            Type::TypeVariable(type_var_id) => {
+                match &cache.type_bindings[type_var_id.0] {
+                    TypeBinding::Bound(binding) => self.convert_type_rec(&binding.clone(), name, refinement, cache),
+                    TypeBinding::Unbound(_, _) => {
+                        let id = name.unwrap_or_else(|| cache.fresh_internal_var(typ.clone()));
+                        let refinement = refinement.unwrap_or(Refinement::true_());
+                        RefinementType::Base(BaseType::TypeVariable(*type_var_id), id, refinement)
+                    }
+                }
+            }
             Type::Function(f) => {
                 let args = fmap(&f.parameters, |arg| {
                     let id = cache.fresh_internal_var(arg.clone());
@@ -84,8 +91,6 @@ impl RefinementContext {
                 let ret = self.convert_type_rec(f.return_type.as_ref(), None, refinement, cache);
                 RefinementType::Function(args, Box::new(ret))
             },
-            Type::TypeVariable(id) => RefinementType::Base(BaseType::TypeVariable(*id), None),
-            Type::UserDefinedType(id) => RefinementType::Base(BaseType::UserDefinedType(*id), None),
             Type::TypeApplication(f, args) => {
                 let f = self.convert_type_rec(f.as_ref(), None, refinement, cache);
                 let args = fmap(args, |arg| {
@@ -95,10 +100,10 @@ impl RefinementContext {
 
                 RefinementType::TypeApplication(Box::new(f), args)
             },
-            Type::Ref(l) => RefinementType::Base(BaseType::Ref(*l), None),
-            Type::ForAll(vars, typ) => {
+            Type::ForAll(_vars, typ) => {
                 let typ = self.convert_type_rec(typ.as_ref(), name, refinement, cache);
-                RefinementType::ForAll(vars.clone(), Box::new(typ))
+                typ
+                // RefinementType::ForAll(vars.clone(), Box::new(typ))
             },
             Type::Refined(typ, more_refinements) => {
                 let r = refinement.map_or_else(|| more_refinements.clone(), |r| r.and(more_refinements.clone()));
@@ -180,7 +185,7 @@ impl RefinementContext {
         where F: FnMut(DefinitionInfoId, &Refinement, T) -> T
     {
         for (_, typ) in self.iter() {
-            if let RefinementType::Base(_, Some((id, refinement))) = typ {
+            if let RefinementType::Base(_, id, refinement) = typ {
                 initial = f(*id, refinement, initial);
             }
         }

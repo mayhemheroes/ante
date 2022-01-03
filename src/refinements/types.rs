@@ -26,7 +26,10 @@ pub enum Refinement {
 /// A RefinementType is a Type and a Refinement, t & r
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum RefinementType {
-    Base(BaseType, Option<(DefinitionInfoId, Refinement)>),
+    // v:Base&r
+    Base(BaseType, DefinitionInfoId, Refinement),
+
+    // x:T -> ... -> U
     Function(Vec<NamedType>, Box<RefinementType>),
     TypeApplication(Box<RefinementType>, Vec<NamedType>),
     ForAll(Vec<TypeVariableId>, Box<RefinementType>),
@@ -96,12 +99,16 @@ impl Refinement {
         self.substitute(id, &Refinement::Variable(replacement))
     }
 
-    pub fn none() -> Refinement {
+    pub fn true_() -> Refinement {
         Refinement::Boolean(true)
     }
 
     pub fn implies(self, other: Refinement) -> Refinement {
-        Refinement::PrimitiveCall(Primitive::Implies, vec![self, other])
+        match (self, other) {
+            (Refinement::Boolean(true), other) => other,
+            (_, Refinement::Boolean(true)) => Refinement::Boolean(true),
+            (first, second) => Refinement::PrimitiveCall(Primitive::Implies, vec![first, second]),
+        }
     }
 
     pub fn and(self, other: Refinement) -> Refinement {
@@ -125,7 +132,7 @@ impl std::fmt::Display for Refinement {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         use Refinement::*;
         match self {
-            Variable(v) => write!(f, "{}", v.0),
+            Variable(v) => write!(f, "v{}", v.0),
             Integer(x) => write!(f, "{}", *x),
             Boolean(b) => write!(f, "{}", *b),
             Float(x) => write!(f, "{}", reinterpret_from_bits(*x)),
@@ -200,21 +207,44 @@ impl std::fmt::Display for Primitive {
 }
 
 impl RefinementType {
+    /// Substitutes any free variables of matching id in the type
+    /// with the given replacement.
     pub fn substitute(&self, id: DefinitionInfoId, replacement: &Refinement) -> RefinementType {
-        let replace_id = |x| if x == id { id } else { x };
         use RefinementType::*;
         match self {
-            Base(b, refinement) => Base(*b, refinement.as_ref().map(|(value_id, refinement)| {
-                (replace_id(*value_id), refinement.substitute(id, &replacement))
-            })),
+            Base(b, value_id, refinement) => {
+                // Only substitute free variables
+                let r = if *value_id == id {
+                    refinement.clone()
+                } else {
+                    refinement.substitute(id, &replacement)
+                };
+                Base(*b, *value_id, r)
+            },
             Function(args, ret) => {
-                let args = fmap(args, |(arg_id, arg)| (replace_id(*arg_id), arg.substitute(id, &replacement)));
-                let ret = Box::new(ret.substitute(id, &replacement));
+                let mut found = false;
+                let args = fmap(args, |(arg_id, arg)| {
+                    if *arg_id == id || found {
+                        found = found || *arg_id == id;
+                        (*arg_id, arg.clone())
+                    } else {
+                        (*arg_id, arg.substitute(id, &replacement))
+                    }
+                });
+                let ret = if found { ret.clone() } else { Box::new(ret.substitute(id, &replacement)) };
                 Function(args, ret)
             }
             TypeApplication(constructor, args) => {
                 let constructor = constructor.substitute(id, replacement);
-                let args = fmap(args, |(arg_id, arg)| (replace_id(*arg_id), arg.substitute(id, &replacement)));
+                let mut found = false;
+                let args = fmap(args, |(arg_id, arg)| {
+                    if *arg_id == id || found {
+                        found = found || *arg_id == id;
+                        (*arg_id, arg.clone())
+                    } else {
+                        (*arg_id, arg.substitute(id, &replacement))
+                    }
+                });
                 TypeApplication(Box::new(constructor), args)
             }
             ForAll(vars, typ) => ForAll(vars.clone(), Box::new(typ.substitute(id, replacement))),
@@ -230,6 +260,14 @@ impl RefinementType {
     pub fn unwrap_function(self) -> (Vec<NamedType>, RefinementType) {
         match self {
             RefinementType::Function(args, ret) => (args, *ret),
+            RefinementType::ForAll(_, typ) => typ.unwrap_function(),
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn unwrap_base(self) -> (BaseType, DefinitionInfoId, Refinement) {
+        match self {
+            RefinementType::Base(b, id, r) => (b, id, r),
             _ => unreachable!(),
         }
     }
@@ -238,33 +276,29 @@ impl RefinementType {
     // Returns a set of constraints that would make this true
     pub fn check_subtype<'c>(&self, other: &RefinementType, context: &mut RefinementContext, cache: &ModuleCache<'c>) -> Refinement {
         match (self, other) {
-            (RefinementType::Base(b1, Some((id1, r1))), RefinementType::Base(b2, Some((id2, r2)))) => check_subtype_base(*b1, *id1, r1, *b2, *id2, r2),
-            (RefinementType::Base(b1, None), RefinementType::Base(b2, Some((id2, r2)))) => r2.clone(),
-            (RefinementType::Base(b1, Some((id1, r1))), RefinementType::Base(b2, None)) => r1.clone(),
-            (RefinementType::Base(b1, None), RefinementType::Base(b2, None)) => Refinement::none(),
+            (RefinementType::Base(b1, id1, r1), RefinementType::Base(b2, id2, r2)) => check_subtype_base(*b1, *id1, r1, *b2, *id2, r2),
             (RefinementType::Function(args1, ret1), RefinementType::Function(args2, ret2)) =>
                 check_subtype_fun(context, args1, ret1, args2, ret2, cache),
-            (RefinementType::TypeApplication(c1, args1), RefinementType::TypeApplication(c2, args2)) => todo!(),
+            (RefinementType::TypeApplication(c1, args1), RefinementType::TypeApplication(c2, args2)) =>
+                check_subtype_tcon(c1, args1, c2, args2, context, cache),
             (a, b) => unreachable!("check_subtype found an uncaught type error while checking {:?} and {:?}", a, b),
         }
     }
 
-    pub fn unit() -> RefinementType {
-        RefinementType::Base(BaseType::Primitive(PrimitiveType::UnitType), None)
+    pub fn unit<'c>(cache: &mut ModuleCache<'c>) -> RefinementType {
+        let id = cache.fresh_internal_var(Type::Primitive(PrimitiveType::UnitType));
+        RefinementType::Base(BaseType::Primitive(PrimitiveType::UnitType), id, Refinement::true_())
     }
 
-    pub fn bool() -> RefinementType {
-        RefinementType::Base(BaseType::Primitive(PrimitiveType::BooleanType), None)
+    pub fn bool<'c>(cache: &mut ModuleCache<'c>) -> RefinementType {
+        let id = cache.fresh_internal_var(Type::Primitive(PrimitiveType::BooleanType));
+        RefinementType::Base(BaseType::Primitive(PrimitiveType::BooleanType), id, Refinement::true_())
     }
 
     pub fn bool_refined<'c>(refinement: Refinement, cache: &mut ModuleCache<'c>) -> RefinementType {
-        let id = fresh_bool_var(cache);
-        RefinementType::Base(BaseType::Primitive(PrimitiveType::BooleanType), Some((id, refinement)))
+        let id = cache.fresh_internal_var(Type::Primitive(PrimitiveType::BooleanType));
+        RefinementType::Base(BaseType::Primitive(PrimitiveType::BooleanType), id, refinement)
     }
-}
-
-fn fresh_bool_var<'c>(cache: &mut ModuleCache<'c>) -> DefinitionInfoId {
-    cache.fresh_internal_var(Type::Primitive(PrimitiveType::BooleanType))
 }
 
 // [Ent-Ext]
@@ -301,7 +335,7 @@ fn check_subtype_fun<'c>(context: &mut RefinementContext, args1: &[NamedType],
     t1: &RefinementType, args2: &[NamedType], t2: &RefinementType, cache: &ModuleCache<'c>) -> Refinement
 {
     let mut t1 = t1.clone();
-    let mut r = Refinement::none();
+    let mut r = Refinement::true_();
 
     for ((x1, s1), (x2, s2)) in args1.into_iter().zip(args2) {
         r = r.and(s2.check_subtype(s1, context, cache));
@@ -325,6 +359,7 @@ fn check_subtype_fun<'c>(context: &mut RefinementContext, args1: &[NamedType],
 // G,v:int{p} |- q[w:=v]     G |- si <: ti
 // -----------------------------------------
 // G |- (C s1...)[v|p] <: (C t1...)[w|q]
-fn check_subtype_tcon() {
-
+fn check_subtype_tcon<'c>(c1: &RefinementType, s1: &[NamedType], c2: &RefinementType, s2: &[NamedType], context: &mut RefinementContext, cache: &ModuleCache<'c>) -> Refinement {
+    // TODO
+    Refinement::true_()
 }

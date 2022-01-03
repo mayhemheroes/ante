@@ -325,7 +325,8 @@ impl<'a> ModuleCache<'a> {
 
     /// Create a fresh variable with the given type for use internally.
     pub fn fresh_internal_var<'c>(&mut self, typ: Type) -> DefinitionInfoId {
-        let id = self.push_definition("internal", false, Location::builtin());
+        let name = format!("internal${}", self.definition_infos.len());
+        let id = self.push_definition(&name, false, Location::builtin());
         self.definition_infos[id.0].typ = Some(typ);
         self.definition_infos[id.0].definition = Some(DefinitionKind::MatchPattern);
         id
@@ -448,5 +449,18 @@ impl<'a> ModuleCache<'a> {
         let id = VariableId(self.variable_nodes.len());
         self.variable_nodes.push(name.to_string());
         id
+    }
+
+    /// Follow any type variables to the type they're bound to
+    pub fn follow_bindings<'b>(&'b self, typ: &'b Type) -> &'b Type {
+        match typ {
+            Type::TypeVariable(id) => {
+                match &self.type_bindings[id.0] {
+                    TypeBinding::Bound(binding) => binding,
+                    TypeBinding::Unbound(_, _) => typ,
+                }
+            },
+            other => other,
+        }
     }
 }

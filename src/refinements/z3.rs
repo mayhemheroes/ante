@@ -71,7 +71,9 @@ impl Context {
             Refinement::PrimitiveCall(Primitive::Not, args) => self.not(convert(&args[0])),
             Refinement::PrimitiveCall(Primitive::Implies, args) => self.implies(convert(&args[0]), convert(&args[1])),
             Refinement::Uninterpreted(_, _) => todo!(),
-            Refinement::Forall(id, t, r) => convert(r.as_ref()),
+            Refinement::Forall(id, t, r) => {
+                convert(r.as_ref())
+            },
         }
     }
 
@@ -81,7 +83,7 @@ impl Context {
         self.mk_const(&name, sort)
     }
 
-    fn type_to_sort<'c>(self, typ: &Type, cache: &ModuleCache<'c>) -> Sort {
+    pub fn type_to_sort<'c>(self, typ: &Type, cache: &ModuleCache<'c>) -> Sort {
         match typ {
             Type::Primitive(PrimitiveType::IntegerType(_)) => self.int_sort(),
             Type::Primitive(PrimitiveType::BooleanType) => self.bool_sort(),
@@ -94,6 +96,7 @@ impl Context {
             }
             Type::Refined(t, _) => self.type_to_sort(t, cache),
             Type::Named(_, t) => self.type_to_sort(t, cache),
+
             other => todo!("{:?}", other),
         }
     }

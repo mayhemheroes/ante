@@ -495,7 +495,7 @@ pub fn try_unify_with_bindings<'b>(t1: &Type, t2: &Type, bindings: &mut TypeBind
         | (Named(_, a), b) => {
             try_unify_with_bindings(a, b, bindings, location, cache)
         },
-        | (a, Refined(b, _))
+        (a, Refined(b, _))
         | (a, Named(_, b)) => {
             try_unify_with_bindings(a, b, bindings, location, cache)
         },
@@ -1051,14 +1051,19 @@ impl<'a> Inferable<'a> for ast::Lambda<'a> {
 
         bind_closure_environment(&self.closure_environment, cache);
 
-        let (return_type, traits) = infer(self.body.as_mut(), cache);
-
-        (Function(FunctionType {
+        let (body, traits) = infer(self.body.as_mut(), cache);
+        let function_type = Function(FunctionType {
             parameters: parameter_types,
-            return_type: Box::new(return_type),
+            return_type: Box::new(body),
             environment: Box::new(infer_closure_environment(&self.closure_environment, cache)),
             is_varargs: false,
-        }), traits)
+        });
+
+        // self.typ is guarenteed to be Some here after name resolution
+        let user_annotated_type = self.typ.clone().unwrap();
+        unify(&function_type, &user_annotated_type, self.location, cache);
+        
+        (user_annotated_type, traits)
     }
 }
 

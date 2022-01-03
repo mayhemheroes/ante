@@ -37,6 +37,7 @@
 //!   - `trait_info: Option<TraitInfoId>` for `ast::TraitDefinition`s and `ast::TraitImpl`s
 //!   - `module_id: Option<ModuleId>` for `ast::Import`s,
 use crate::parser::{ self, ast, ast::Ast };
+use crate::types::typed::Typed;
 use crate::types::{ TypeInfoId, TypeVariableId, Type, PrimitiveType,
                     TypeInfoBody, TypeConstructor, Field, LetBindingLevel,
                     FunctionType, INITIAL_LEVEL, STRING_TYPE };
@@ -621,8 +622,8 @@ impl<'c> NameResolver {
                 Type::Refined(typ, refinement)
             }
             ast::Type::Named(name, typ, location) => {
-                let typ = self.convert_type(typ, cache);
                 let id = self.push_definition(&name, self.in_mutable_context, cache, *location);
+                let typ = self.convert_type(typ, cache);
                 cache.definition_infos[id.0].typ = Some(typ.clone());
                 Type::Named(id, Box::new(typ))
             },
@@ -637,6 +638,36 @@ impl<'c> NameResolver {
                 Refinement::Integer(0)
             }
         }
+    }
+
+    /// TODO: This is a hack for re-sugaring 'and' and 'or' operators.
+    /// They're sugared as if expressions in normal expressions to get lazy evaluation
+    /// but we want to represent them directly as 'and' and 'or' functions in refinement expressions.
+    pub fn convert_refinement_if_expr(&mut self, if_expr: &ast::If<'c>, cache: &mut ModuleCache<'c>) -> Refinement {
+        let error = || {
+            error!(if_expr.location, "Invalid syntax in refinement type");
+            note!(if_expr.location, "Refinement types are limited to using variables, literals, and functions");
+            Refinement::Integer(0)
+        };
+
+        let (op, arg1, arg2) = match &if_expr.otherwise {
+            Some(otherwise) => match (if_expr.then.as_ref(), otherwise.as_ref()) {
+                (then, Ast::Literal(literal)) => match &literal.kind {
+                    ast::LiteralKind::Bool(false) => (Primitive::And, if_expr.condition.as_ref(), then),
+                    _ => return error(),
+                },
+                (Ast::Literal(literal), otherwise) => match &literal.kind {
+                    ast::LiteralKind::Bool(true) => (Primitive::Or, if_expr.condition.as_ref(), otherwise),
+                    _ => return error(),
+                },
+                _ => return error(),
+            },
+            _ => return error(),
+        };
+
+        let arg1 = self.convert_refinement(arg1, cache);
+        let arg2 = self.convert_refinement(arg2, cache);
+        Refinement::PrimitiveCall(op, vec![arg1, arg2])
     }
 
     pub fn convert_refinement_function_call(&mut self, call: &ast::FunctionCall<'c>, cache: &mut ModuleCache<'c>) -> Refinement {
@@ -693,6 +724,7 @@ impl<'c> NameResolver {
                 }
             },
             Ast::FunctionCall(call) => self.convert_refinement_function_call(call, cache),
+            Ast::If(if_expr) => self.convert_refinement_if_expr(if_expr, cache),
             _ => {
                 error!(ast.locate(), "Invalid syntax in refinement type");
                 note!(ast.locate(), "Refinement types are limited to using variables, literals, and functions");
@@ -775,6 +807,24 @@ impl<'c> NameResolver {
             }
         }
         required_traits
+    }
+
+    /// Fills in the lambda.typ field with any types the user manually annotates.
+    fn resolve_lambda_type(&mut self, lambda: &mut ast::Lambda<'c>, cache: &mut ModuleCache<'c>) {
+        let parameters = fmap(&lambda.args, |arg| {
+            match arg.get_type() {
+                Some(typ) => typ.clone(),
+                None => cache.next_type_variable(self.let_binding_level),
+            }
+        });
+        let return_type = Box::new(match lambda.return_type.as_ref() {
+            Some(typ) => self.convert_type(typ, cache),
+            None => cache.next_type_variable(self.let_binding_level),
+        });
+
+        let environment = Box::new(cache.next_type_variable(self.let_binding_level));
+
+        lambda.typ = Some(Type::Function(FunctionType { parameters, return_type, environment, is_varargs: false }));
     }
 }
 
@@ -870,6 +920,7 @@ impl<'c> Resolvable<'c> for ast::Lambda<'c> {
     fn define(&mut self, resolver: &mut NameResolver, cache: &mut ModuleCache<'c>) {
         resolver.push_lambda(self, cache);
         resolver.resolve_all_definitions(self.args.iter_mut(), cache, || DefinitionKind::Parameter);
+        resolver.resolve_lambda_type(self, cache);
         self.body.define(resolver, cache);
         resolver.pop_lambda(cache);
     }

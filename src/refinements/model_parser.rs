@@ -32,21 +32,20 @@ pub fn issue_refinement_error<'c>(context: z3::Context, assert: z3::Ast,
 fn get_z3_definition<'c>(context: z3::Context, id: DefinitionInfoId, model: z3::Model, cache: &ModuleCache<'c>) -> Option<String> {
     let info = &cache.definition_infos[id.0];
     let name = format!("{}${}", info.name, id.0);
-    // let typ = cache.follow_bindings(info.typ.as_ref().unwrap());
+    let typ = cache.follow_bindings(info.typ.as_ref().unwrap());
 
     // Filter out any functions used, giving their definition in error messages
     // usually isn't helpful
-    // if is_function(&typ) {
-    //     return None;
-    // }
+    if is_function(&typ) {
+        return None;
+    }
 
-    todo!()
-    // let sort = self.type_to_sort(&typ, cache);
-    // let var = self.variable(&name, sort);
-    // self.z3_context.eval(model, var).map(|value| {
-    //     let expr = z3_expr_to_string(self.z3_context, value, cache);
-    //     format!("{} = {}", info.name, expr)
-    // })
+    let sort = context.type_to_sort(&typ, cache);
+    let var = context.mk_const(&name, sort);
+    context.eval(model, var).map(|value| {
+        let expr = z3_expr_to_string(context, value, cache);
+        format!("{} = {}", info.name, expr)
+    })
 }
 
 fn is_function(typ: &crate::types::Type) -> bool {
