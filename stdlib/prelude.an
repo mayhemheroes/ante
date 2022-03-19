@@ -99,11 +99,11 @@ impl TryCast a b given Cast a b with
 
 
 // Huge block of builtin numeric operators incoming
-trait Add n with (+): n -> n -> n
+trait Add n with (+): a:n -> b:n -> c:n & c == a + b
 impl Add a given Int a with (+) _ _ = builtin "AddInt"
 impl Add float with (+) (_: float) (_: float) : float = builtin "AddFloat"
 
-trait Sub n with (-): n -> n -> n
+trait Sub n with (-): a:n -> b:n -> c:n & c == a - b
 impl Sub a given Int a with (-) _ _ = builtin "SubInt"
 impl Sub float with (-) (_: float) (_: float) : float = builtin "SubFloat"
 
@@ -139,10 +139,10 @@ impl Eq Ordering with
 trait Cmp a with
     compare: a -> a -> Ordering
 
-(<) a b = compare a b == Less
-(>) a b = compare a b == Greater
-(<=) a b = compare a b != Greater
-(>=) a b = compare a b != Less
+(<) a b  : c:bool & c == a <  b = compare a b == Less
+(>) a b  : c:bool & c == a >  b = compare a b == Greater
+(<=) a b : c:bool & c == a <= b = compare a b != Greater
+(>=) a b : c:bool & c == a >= b = compare a b != Less
 
 impl Cmp a given Int a with
     compare _ _ =

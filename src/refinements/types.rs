@@ -2,7 +2,7 @@ use crate::cache::ModuleCache;
 use crate::util::fmap;
 use crate::{cache::DefinitionInfoId, lifetimes};
 use crate::lexer::token::Token;
-use crate::types::{PrimitiveType, Type, TypeInfoId, TypeVariableId};
+use crate::types::{PrimitiveType, Type, TypeBinding, TypeInfoId, TypeVariableId};
 use crate::refinements::context::RefinementContext;
 use crate::util::reinterpret_from_bits;
 
@@ -298,6 +298,53 @@ impl RefinementType {
     pub fn bool_refined<'c>(refinement: Refinement, cache: &mut ModuleCache<'c>) -> RefinementType {
         let id = cache.fresh_internal_var(Type::Primitive(PrimitiveType::BooleanType));
         RefinementType::Base(BaseType::Primitive(PrimitiveType::BooleanType), id, refinement)
+    }
+
+    pub fn dump<'c>(&self, cache: &ModuleCache<'c>) {
+        match self {
+            RefinementType::Base(b, id, r) => {
+                print!("({}:", id.0);
+                match b {
+                    BaseType::TypeVariable(var) => {
+                        // Sanity assert to ensure all bound typevars are already gone via convert_type
+                        assert!(!matches!(&cache.type_bindings[var.0], TypeBinding::Bound(_)));
+                        print!("tv{}", var.0);
+                    },
+                    BaseType::Primitive(primitive) => primitive.dump(cache),
+                    BaseType::UserDefinedType(typ) => print!("{}", &cache.type_infos[typ.0].name),
+                    BaseType::Ref(_lifetime) => print!("ref"),
+                }
+                print!(" & {})", r);
+            },
+            RefinementType::Function(args, ret) => {
+                print!("(");
+                for (id, arg) in args {
+                    print!("{}:", id.0);
+                    arg.dump(cache);
+                    print!(" -> ");
+                }
+                ret.dump(cache);
+                print!(")");
+            },
+            RefinementType::TypeApplication(f, args) => {
+                print!("(");
+                f.dump(cache);
+                for (id, arg) in args {
+                    print!(" {}:", id.0);
+                    arg.dump(cache);
+                }
+                print!(")");
+            },
+            RefinementType::ForAll(vars, typ) => {
+                print!("(forall");
+                for var in vars {
+                    print!(" tv{}", var.0);
+                }
+                print!(". ");
+                typ.dump(cache);
+                print!(")");
+            },
+        }
     }
 }
 

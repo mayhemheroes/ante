@@ -276,3 +276,36 @@ pub enum Kind {
     #[allow(dead_code)]
     HigherOrder(Vec<Kind>),
 }
+
+impl PrimitiveType {
+    pub fn dump<'c>(&self, cache: &ModuleCache<'c>) {
+        match self {
+            PrimitiveType::IntegerType(typ) => {
+                match typ {
+                    IntegerKind::Unknown => print!("unknown_int"),
+                    IntegerKind::Inferred(typ) => {
+                        match &cache.type_bindings[typ.0] {
+                            TypeBinding::Bound(typ) => print!("{}", typ.display(cache)),
+                            TypeBinding::Unbound(_, _) => print!("inferred_int_{}", typ.0),
+                        }
+                    },
+                    IntegerKind::I8 =>  print!("i8"),
+                    IntegerKind::I16 => print!("i16"),
+                    IntegerKind::I32 => print!("i32"),
+                    IntegerKind::I64 => print!("i64"),
+                    IntegerKind::Isz => print!("isz"),
+                    IntegerKind::U8 =>  print!("u8"),
+                    IntegerKind::U16 => print!("u16"),
+                    IntegerKind::U32 => print!("u32"),
+                    IntegerKind::U64 => print!("u64"),
+                    IntegerKind::Usz => print!("usz"),
+                }
+            },
+            PrimitiveType::FloatType => print!("float"),
+            PrimitiveType::CharType => print!("char"),
+            PrimitiveType::BooleanType => print!("bool"),
+            PrimitiveType::UnitType => print!("unit"),
+            PrimitiveType::Ptr => print!("Ptr"),
+        }
+    }
+}

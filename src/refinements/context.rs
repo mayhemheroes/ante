@@ -191,4 +191,18 @@ impl RefinementContext {
         }
         initial
     }
+
+    pub fn dump<'c>(&self, cache: &ModuleCache<'c>) {
+        if self.definitions.is_empty() {
+            println!("context = []");
+            return;
+        }
+        println!("context = [");
+        for (id, typ) in self.iter() {
+            print!("  {} : ", cache.definition_infos[id.0].name);
+            typ.dump(cache);
+            println!(",");
+        }
+        println!("]")
+    }
 }

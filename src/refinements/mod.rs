@@ -20,19 +20,18 @@ pub fn refine<'c>(ast: &ast::Ast<'c>, output_refinements: bool, cache: &mut Modu
 
     // TODO: currently some extra refinements are being created (possibly from
     //       RefinementContext::named) that causes the solver to fail
-    //
-    // let z3_context = z3::Context::new();
-    // let condition = z3_context.convert_refinement(&refinement, cache);
-    // let solver = z3::Solver::new(z3_context);
-    // solver.assert(z3_context.not(condition));
+    let z3_context = z3::Context::new();
+    let condition = z3_context.convert_refinement(&refinement, cache);
+    let solver = z3::Solver::new(z3_context);
+    solver.assert(z3_context.not(condition));
 
-    // match solver.check() {
-    //     z3::SatResult::Sat(model) => {
-    //         model_parser::issue_refinement_error(z3_context, condition, model, cache, ast.locate(), ast.locate());
-    //     },
-    //     z3::SatResult::Unsat => println!("Could not prove condition"),
-    //     z3::SatResult::Unknown(reason) => println!("Unknown error: {}", reason),
-    // }
+    match solver.check() {
+        z3::SatResult::Sat(model) => {
+            model_parser::issue_refinement_error(z3_context, condition, model, cache, ast.locate(), ast.locate());
+        },
+        z3::SatResult::Unsat => println!("Could not prove condition"),
+        z3::SatResult::Unknown(reason) => println!("Unknown error: {}", reason),
+    }
 }
 
 fn check<'c>(ast: &ast::Ast<'c>, typ: &RefinementType, context: &mut RefinementContext, cache: &mut ModuleCache<'c>) -> Refinement {
@@ -72,6 +71,9 @@ fn synthesize<'c>(ast: &ast::Ast<'c>, context: &mut RefinementContext, cache: &m
 fn check_synthesize<'c>(ast: &ast::Ast<'c>, t: &RefinementType, context: &mut RefinementContext, cache: &mut ModuleCache<'c>) -> Refinement {
     let (r1, s) = synthesize(ast, context, cache);
     let r2 = s.check_subtype(t, context, cache);
+
+    context.dump(cache);
+    println!("check_subtype ({}) = {}", ast, r2);
 
     r1.and(r2)
 }
@@ -113,8 +115,11 @@ fn check_lambda<'c>(ast: &ast::Lambda<'c>, typ: &RefinementType, context: &mut R
     let (ys, mut t) = typ.clone().unwrap_function();
 
     for (x, (y, s)) in ast.args.iter().zip(ys.iter()) {
-        let (_, x, x_id) = RefinementContext::named(x, cache);
-        context.insert_refinement(x_id, s.substitute(*y, &x));
+        let (x_ast, x, x_id) = RefinementContext::named(x, cache);
+        let s = s.substitute(*y, &x);
+        check(&x_ast, &s, context, cache);
+
+        context.insert_refinement(x_id, s);
         t = t.substitute(*y, &x);
     }
 
