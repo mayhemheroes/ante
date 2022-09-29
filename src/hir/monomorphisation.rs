@@ -13,6 +13,7 @@ use crate::types::{self, TypeInfoId, TypeVariableId};
 use crate::util::{fmap, trustme};
 
 use super::definitions::Definitions;
+use super::handler::Handler;
 use super::types::{IntegerKind, Type};
 
 const DEFAULT_INTEGER_KIND: IntegerKind = IntegerKind::I32;
@@ -44,6 +45,8 @@ pub struct Context<'c> {
     /// after type inference. This is needed for definitions that are polymorphic in
     /// the impls they may use within.
     impl_mappings: Vec<Impls>,
+
+    handlers: Vec<Handler>,
 
     next_id: usize,
 }
@@ -97,6 +100,7 @@ impl<'c> Context<'c> {
             impl_mappings: vec![HashMap::new()],
             next_id: 0,
             cache,
+            handlers: vec![],
         }
     }
 
@@ -126,8 +130,8 @@ impl<'c> Context<'c> {
             Extern(_) => unit_literal(),
             MemberAccess(member_access) => self.monomorphise_member_access(member_access),
             Assignment(assignment) => self.monomorphise_assignment(assignment),
-            EffectDefinition(_) => todo!(),
-            Handle(_) => todo!(),
+            EffectDefinition(_) => unit_literal(),
+            Handle(handle) => self.monomorphise_handle(handle),
         }
     }
 
@@ -1504,6 +1508,14 @@ impl<'c> Context<'c> {
                 Ast::MemberAccess(hir::MemberAccess { lhs, member_index })
             },
         }
+    }
+
+    fn monomorphise_handle(&mut self, handle: &ast::Handle<'c>) -> hir::Ast {
+        let handler = Handler::from_expr(self, handle);
+        self.handlers.push(handler);
+        let ret = self.monomorphise(handle.expression.as_ref());
+        self.handlers.pop();
+        ret
     }
 }
 

@@ -1,0 +1,53 @@
+effect GiveInt with
+    give_int: unit -> i32
+
+do_math ()  =
+    print "a"
+    a = give_int ()
+    print "b"
+    b = give_int ()
+    print "c"
+    a + b
+
+ans = handle do_math ()
+| return x -> 7
+| give_int _ -> 
+    print 1
+    r = 1 + resume 0
+    print 2
+    r
+
+print ans
+
+// do_math () =
+//     print "a"
+//     print 1
+//     ret x = 7
+//     f1 av =
+//         a = av
+//         print "b"
+//         print 1
+//         f2 bv =
+//             b = bv
+//             print "c"
+//             ret (a + b)
+// 
+//         r = 1 + f2 0
+//         print 2
+//         r
+// 
+//     r = 1 + f1 0
+//     print 2
+//     r
+
+
+// args: --delete-binary
+// expected stdout:
+// a
+// 1
+// b
+// 1
+// c
+// 2
+// 2
+// 9

@@ -1,0 +1,78 @@
+
+effect Log with
+    log: string -> unit
+
+handle log "test"
+| log s -> 
+    print s
+    print s
+
+
+
+
+
+
+
+calculation () =
+    if flip 1 then
+        if flip 2 then 0.5
+        else 4.0
+    else 1.0
+
+expected_value (f: unit -> f64 can Flip): f64 =
+    handle f ()
+    | flip n -> 
+        print n
+        (resume true + resume false) / 2.0
+
+calculation () =
+    r x = x
+    f1 b =
+        if b then
+            f2 c = r (if c then 0.5 else 4.0)
+
+            (f2 true + f2 false) / 2.0
+        else r 1.0
+
+    (f1 true + f1 false) / 2.0
+
+
+c ()
+
+c () =
+    print 1
+    (c2 true + c2 false) / 2.0
+
+c2 b =
+    if b then
+        print 2
+        (c3 true + c3 false) / 2.0
+    else 1.0
+
+c3 b =
+    if b
+    then 0.5
+    else 4.0
+
+
+
+f1 () =
+    print 1
+    (f2 true + f2 false) / 2.0
+
+f2 b =
+    if b then
+        print 2
+        (f3 true + f3 false) / 2.0
+    else
+        1.0
+
+f3 b =
+    if b then 0.5
+    else 4.0
+
+
+// args: --delete-binary
+// expected stdout:
+// test
+// test
