@@ -1,0 +1,10 @@
+row = 0
+col = 0
+
+match ()
+| () ->
+    recur2 col = print col
+    recur2 col
+
+    recur row = recur2 row
+    recur row

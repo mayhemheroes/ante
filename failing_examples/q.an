@@ -1,0 +1,3 @@
+
+foo = input "hmm: "
+print foo

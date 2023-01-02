@@ -35,7 +35,7 @@ use crate::error::location::Location;
 use crate::types::typechecker::find_all_typevars;
 use crate::types::{typeprinter::TypePrinter, Type, TypeVariableId};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt::Display;
 
 use super::GeneralizedType;
@@ -69,23 +69,19 @@ pub struct RequiredTrait {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Callsite {
-    /// This required trait originates from the given variable inside the function.
-    /// That variable's definition should be replaced with the selected impl's.
-    Direct(VariableId),
+pub struct Callsite {
+    /// The variable that requires an impl of this trait
+    pub target: VariableId,
 
-    /// This required trait originates from a definition outside of the current
-    /// function where it has the given TraitConstraintId. It is required transitively
-    /// to the current function by the given variable callsite.
-    Indirect(VariableId, Vec<TraitConstraintId>),
+    /// The remaining path of TraitConstraintIds to follow after next_variable.
+    /// If this is empty then next_variable is the origin of this trait constraint
+    /// and we can replace the variable with a direct reference to the impl when monomorphising.
+    pub path: VecDeque<TraitConstraintId>,
 }
 
 impl Callsite {
-    pub fn id(&self) -> VariableId {
-        match self {
-            Callsite::Direct(callsite) => *callsite,
-            Callsite::Indirect(callsite, _) => *callsite,
-        }
+    pub fn new(target: VariableId, path: VecDeque<TraitConstraintId>) -> Callsite {
+        Callsite { target, path }
     }
 }
 
@@ -119,7 +115,8 @@ pub type TraitConstraints = Vec<TraitConstraint>;
 impl RequiredTrait {
     pub fn as_constraint(&self, scope: ImplScopeId, callsite: VariableId, id: TraitConstraintId) -> TraitConstraint {
         let mut required = self.clone();
-        required.callsite = Callsite::Indirect(callsite, vec![self.signature.id]);
+        required.callsite.target = callsite;
+        required.callsite.path.push_front(self.signature.id);
         required.signature.id = id;
         TraitConstraint { required, scope }
     }
@@ -217,14 +214,8 @@ impl TraitConstraint {
         let id = cache.next_trait_constraint_id();
         let signature = ConstraintSignature { trait_id, args, id };
 
-        let callsite = match &impl_constraint.required.callsite {
-            Callsite::Direct(var) => Callsite::Indirect(*var, vec![inner_id]),
-            Callsite::Indirect(var, ids) => {
-                let mut ids = ids.clone();
-                ids.push(inner_id);
-                Callsite::Indirect(*var, ids)
-            },
-        };
+        let mut callsite = impl_constraint.required.callsite.clone();
+        callsite.path.push_back(inner_id);
 
         let required = RequiredTrait { signature, callsite };
         TraitConstraint { required, scope: impl_constraint.scope }
@@ -252,7 +243,7 @@ impl TraitConstraint {
 
     /// Get the location of the callsite where this TraitConstraint arose from
     pub fn locate<'c>(&self, cache: &ModuleCache<'c>) -> Location<'c> {
-        cache[self.required.callsite.id()].location
+        cache[self.required.callsite.target].location
     }
 
     pub fn display<'a, 'c>(&self, cache: &'a ModuleCache<'c>) -> ConstraintSignaturePrinter<'a, 'c> {

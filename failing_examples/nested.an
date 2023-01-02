@@ -1,0 +1,28 @@
+
+foo x =
+    bar y =
+        baz z =
+            print x
+            print y
+            print z
+            if x + y < 4 then
+                bar (x + y)
+            else
+                42 + z
+
+        baz (y + 1)
+
+    bar (x + 1)
+
+print (foo 1)
+
+// expected stdout:
+// x=1, y=2, z=3
+// 1
+// 2
+// 3
+// x=1, y=3, z=4
+// 1
+// 3
+// 4
+// 46

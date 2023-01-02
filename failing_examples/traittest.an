@@ -1,0 +1,31 @@
+
+trait Foo a with
+    traitfn: a -> a
+
+impl Foo (Maybe a) given Foo a with
+    traitfn m =
+        match m
+        | Some x -> Some <| traitfn x
+        | None -> None
+
+impl Foo I32 with
+    traitfn x = x
+
+
+
+inner x =
+    traitfn x
+
+outer x = inner x
+
+outer (Some 3i32)
+
+/*
+inner (x: a) (traitfn : Foo a) : a =
+    traitfn x
+
+outer (x: a) (traitfn : Foo a) : a =
+    inner x traitfn
+
+outer (Some 3i32) (mkFooMaybe mkFooI32)
+*/

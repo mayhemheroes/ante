@@ -7,7 +7,7 @@ use crate::lexer::token::FloatKind;
 use crate::nameresolution::builtin::BUILTIN_ID;
 use crate::parser::ast;
 use crate::parser::ast::ClosureEnvironment;
-use crate::types::traits::{Callsite, RequiredImpl, TraitConstraintId};
+use crate::types::traits::{RequiredImpl, TraitConstraintId};
 use crate::types::typechecker::{self, TypeBindings};
 use crate::types::typed::Typed;
 use crate::types::{self, TypeInfoId, TypeVariableId};
@@ -52,15 +52,40 @@ pub struct Context<'c> {
 
 type Impls = HashMap<VariableId, Impl>;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct Impl {
-    direct_binding: Option<DefinitionInfoId>,
-    indirect: HashMap<TraitConstraintId, Vec<(Vec<TraitConstraintId>, ImplInfoId)>>,
+    direct_binding: Option<ImplInfoId>,
+    indirect: HashMap<TraitConstraintId, Impl>,
 }
 
 impl Impl {
-    fn find_indirect(&self, id: TraitConstraintId) -> &[(Vec<TraitConstraintId>, ImplInfoId)] {
+    fn find_indirect(&self, id: TraitConstraintId) -> &Impl {
         expect_opt!(self.indirect.get(&id), "No impl for key {:?}. Current mapping:\n{:?}", id, self)
+    }
+
+    fn insert_impl(&mut self, mut path: impl Iterator<Item = TraitConstraintId>, impl_: ImplInfoId) {
+        match path.next() {
+            None => {
+                assert!(self.direct_binding.map_or(true, |binding| binding == impl_), "Tried to bind over impl {:?} with new impl {:?}", self.direct_binding, impl_);
+                self.direct_binding = Some(impl_);
+            }
+            Some(callsite) => {
+                self.indirect.entry(callsite).or_default().insert_impl(path, impl_);
+            }
+        }
+    }
+
+    fn merge(&mut self, other: &Impl) {
+        if let Some(binding) = other.direct_binding {
+            match self.direct_binding {
+                Some(existing) if existing != binding => unreachable!("Tried to bind over existing impl binding with new binding while merging"),
+                _ => self.direct_binding = Some(binding),
+            }
+        }
+
+        for (id, indirect_impl) in &other.indirect {
+            self.indirect.entry(*id).or_default().merge(indirect_impl);
+        }
     }
 }
 
@@ -625,24 +650,9 @@ impl<'c> Context<'c> {
         let new_impls = self.impl_mappings.last_mut().unwrap();
 
         for required_impl in required_impls {
-            match &required_impl.callsite {
-                Callsite::Direct(callsite) => {
-                    let binding = self.cache.find_method_in_impl(*callsite, required_impl.binding);
-                    new_impls.entry(*callsite).or_default().direct_binding = Some(binding);
-                },
-                Callsite::Indirect(callsite, ids) => {
-                    let mut ids = ids.clone();
-                    let top = ids.remove(0);
-
-                    new_impls
-                        .entry(*callsite)
-                        .or_default()
-                        .indirect
-                        .entry(top)
-                        .or_default()
-                        .push((ids, required_impl.binding));
-                },
-            }
+            let callsite = required_impl.callsite.target;
+            let path = required_impl.callsite.path.iter().copied();
+            new_impls.entry(callsite).or_default().insert_impl(path, required_impl.binding);
         }
     }
 
@@ -652,11 +662,13 @@ impl<'c> Context<'c> {
     /// definition. This is currently only done for trait functions/values to
     /// point them to impls that actually have definitions.
     fn get_definition_id(&self, variable: &ast::Variable<'c>) -> DefinitionInfoId {
+        let id = variable.id.unwrap();
         self.impl_mappings
             .last()
             .unwrap()
-            .get(&variable.id.unwrap())
+            .get(&id)
             .and_then(|impl_| impl_.direct_binding)
+            .map(|binding| self.cache.find_method_in_impl(id, binding))
             .unwrap_or_else(|| variable.definition.unwrap())
     }
 
@@ -719,6 +731,7 @@ impl<'c> Context<'c> {
 
     fn add_required_traits(&mut self, definition: &crate::cache::DefinitionInfo, variable_id: VariableId) {
         let mut new_impls = Impls::new();
+        println!("add_required_traits for definition {}, variable id {}", definition.name, variable_id.0);
 
         for required_trait in &definition.required_traits {
             // If the impl has 0 definitions we can't attach it to any variables
@@ -739,48 +752,24 @@ impl<'c> Context<'c> {
                 },
             };
 
-            let mut bindings = impls.find_indirect(required_trait.signature.id).to_vec();
+            println!("Required {}, id {}, callsite {} {:?}", required_trait.display(&self.cache), required_trait.signature.id.0, 
+                     self.cache[required_trait.callsite.target].name,
+                     required_trait.callsite);
 
-            match &required_trait.callsite {
-                Callsite::Direct(callsite) => {
-                    for (mut path, impl_) in bindings.iter().cloned() {
-                        if !path.is_empty() {
-                            let top = path.remove(0);
-                            new_impls
-                                .entry(*callsite)
-                                .or_default()
-                                .indirect
-                                .entry(top)
-                                .or_default()
-                                .push((path, impl_));
-                        } else {
-                            let binding = self.cache.find_method_in_impl(*callsite, impl_);
-                            new_impls.entry(*callsite).or_default().direct_binding = Some(binding);
-                        }
-                    }
-                },
-                Callsite::Indirect(callsite, ids) => {
-                    if ids.len() == 1 {
-                        let top = *ids.last().unwrap();
-                        new_impls.entry(*callsite).or_default().indirect.entry(top).or_default().append(&mut bindings);
-                    } else {
-                        let mut ids = ids.clone();
-                        let top = ids.remove(0);
+            let impl_ = impls.find_indirect(required_trait.signature.id);
+            let callsite = required_trait.callsite.target;
 
-                        for (path, _) in &mut bindings {
-                            path.append(&mut ids.clone());
-                        }
+            println!("Found    impl = {:?}", impl_);
 
-                        new_impls
-                            .entry(*callsite)
-                            .or_default()
-                            .indirect
-                            .entry(top)
-                            .or_default()
-                            .append(&mut bindings.to_vec());
-                    }
-                },
+            match new_impls.get_mut(&callsite) {
+                None => { new_impls.insert(callsite, impl_.clone()); },
+                Some(old_impl) => {
+                    println!("existing impl = {:?}", old_impl);
+                    old_impl.merge(&impl_)
+                }
             }
+
+            println!("new_impl      = {:?}", new_impls[&callsite]);
         }
 
         self.impl_mappings.push(new_impls);

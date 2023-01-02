@@ -1,0 +1,7 @@
+n = 0
+closure = n, fn env -> 
+    g x = print x
+    g env
+
+env, f = closure
+f env

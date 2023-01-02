@@ -40,7 +40,7 @@ use crate::types::{
 };
 use crate::util::*;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -409,7 +409,7 @@ fn to_trait_constraints(
         traits.push(TraitConstraint {
             required: RequiredTrait {
                 signature: ConstraintSignature { trait_id: *trait_id, args: args.clone(), id },
-                callsite: Callsite::Direct(callsite),
+                callsite: Callsite::new(callsite, VecDeque::new()),
             },
             scope,
         });

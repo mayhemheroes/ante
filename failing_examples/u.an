@@ -1,0 +1,9 @@
+trait Foo a with
+    foo: unit -> a
+
+impl Foo u64 with
+    foo _ = 0
+
+a = foo ()
+b = a
+c = b

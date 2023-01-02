@@ -311,27 +311,36 @@ fn check_given_constraints<'c>(
 ) -> Option<(Vec<(ImplInfoId, TraitConstraint)>, UnificationBindings)> {
     let mut required_impls = vec![(impl_id, constraint.clone())];
 
+    // println!("Looking at constraint {}", constraint.display(cache));
+    // println!("  {} requires {}", info.name, required.display(cache));
+
     // TODO: Remove need for cloning here.
     // Needed because cache is borrowed mutably below.
-    for signature in cache[impl_id].given.clone() {
-        // Must carry forward the impl_bindings we got from find_matching_normal_impls
-        // manually since we don't want to insert them into the catch if this impl doesn't
-        // get selected to be used for the TraitConstraint.
-        let args = fmap(&signature.args, |typ| {
-            typechecker::replace_all_typevars_with_bindings(typ, &mut impl_bindings, cache)
-        });
+    // for signature in cache[impl_id].given.clone() {
+    for definition in cache[impl_id].definitions.clone() {
+        let info = &cache[definition];
+        for mut required in info.required_traits.clone() {
+            // Must carry forward the impl_bindings we got from find_matching_normal_impls
+            // manually since we don't want to insert them into the catch if this impl doesn't
+            // get selected to be used for the TraitConstraint.
+            required.signature.args = fmap(&required.signature.args, |typ| {
+                typechecker::replace_all_typevars_with_bindings(typ, &mut impl_bindings, cache)
+            });
 
-        let constraint =
-            TraitConstraint::impl_given_constraint(signature.id, signature.trait_id, args, constraint, cache);
+            let constraint = required.as_constraint(constraint.scope, constraint.required.callsite.target, required.signature.id);
 
-        let mut matching_impls = find_matching_impls(&constraint, &unification_bindings, fuel, cache);
+            // let constraint =
+            //     TraitConstraint::impl_given_constraint(signature.id, signature.trait_id, args, constraint, cache);
 
-        if matching_impls.len() == 1 {
-            let (mut impls, bindings) = matching_impls.remove(0);
-            unification_bindings.extend(bindings);
-            required_impls.append(&mut impls);
-        } else {
-            return None;
+            let mut matching_impls = find_matching_impls(&constraint, &unification_bindings, fuel, cache);
+
+            if matching_impls.len() == 1 {
+                let (mut impls, bindings) = matching_impls.remove(0);
+                unification_bindings.extend(bindings);
+                required_impls.append(&mut impls);
+            } else {
+                return None;
+            }
         }
     }
 
@@ -345,7 +354,7 @@ fn bind_impl(impl_id: ImplInfoId, constraint: TraitConstraint, cache: &mut Modul
     infer_trait_impl(impl_id, cache);
 
     // Now attach the RequiredImpl to the callsite variable it is used in
-    let callsite = constraint.required.callsite.id();
+    let callsite = constraint.required.callsite.target;
     let required_impl = constraint.into_required_impl(impl_id);
 
     let callsite_info = &mut cache[callsite];

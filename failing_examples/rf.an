@@ -1,0 +1,12 @@
+
+main () =
+    file = open_infile "t.an"
+
+    loop () ->
+        if not eof file then
+            print <| next_line file
+            recur ()
+
+    iter (open_infile "b.an") print
+
+main ()

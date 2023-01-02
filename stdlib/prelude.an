@@ -469,24 +469,26 @@ impl Cast String (Ptr Char) with
 
 impl Cast (Int a) String given Div (Int a), Mod (Int a), Cmp (Int a) with
     cast i =
-      abs, sign_off = if i < 0 then (i * -1, 1) else (i, 0)
-      len = loop abs (cmp = 10) ->
-        next = cmp * 10 // Here to check for overflow
-        if abs >= cmp and next > cmp
-        then 1 + recur abs next
-        else 1
+      abs, sign_offset = if i < 0 then (i * -1, 1) else (i, 0)
 
-      size = len + sign_off + 1
+      len = loop abs (cmp = 10) ->
+          next = cmp * 10 // Check for overflow
+          if abs >= cmp and next > cmp
+          then 1 + recur abs next
+          else 1
+
+      size = len + sign_offset + 1
       buf = malloc size
-      if sign_off == 1
-      then ptr_to_ref <| offset buf 0 := '-'
+      if sign_offset == 1 then
+          ptr_to_ref buf := '-'
+
       ptr_to_ref <| offset buf (size - 1) := '\0'
 
-      loop (pos = len - 1) (buf = offset buf sign_off) abs ->
-        char_offset = builtin "Truncate" (abs % 10)
-        ptr_to_ref <| offset buf pos := '0' + char_offset
-        if pos > 0
-        then recur (pos - 1) buf (abs / 10)
+      loop (i = len - 1 + sign_offset) abs ->
+          char_offset = builtin "Truncate" (abs % 10)
+          ptr_to_ref <| offset buf i := '0' + char_offset
+          if i > sign_offset then
+              recur (i - 1) (abs / 10)
 
       String buf (size - 1)
 

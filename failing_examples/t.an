@@ -1,0 +1,33 @@
+trait Iterator2 i with
+    next2: i a -> Maybe (i a, a)
+
+iter2 (i: i a) (f: a -> b) : unit = 
+    match next2 i
+    | None -> ()
+    | Some (i2, a) -> 
+        f a
+        iter2 i2 f
+
+type Generator a = 
+    f: a -> a
+    e: a
+
+type TakeWhile i a =
+    f: a -> bool
+    iter: i a
+
+impl Iterator2 Generator with
+    next2 gen = 
+        f, a = gen.f, gen.e
+        Some (Generator f (f a), a)
+
+impl Iterator2 (TakeWhile i) given Iterator2 i with
+    next2 tw = 
+        f, it = tw.f, tw.iter
+        match next2 it
+        | Some (i2, a) -> if f a then Some (TakeWhile f i2, a) else None
+        | None -> None
+
+i = TakeWhile (_ < 1000) (Generator (_ * 2) 1)
+
+iter2 i print

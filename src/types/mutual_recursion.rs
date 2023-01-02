@@ -13,23 +13,25 @@ use crate::{
 };
 
 use super::{
-    traits::{Callsite, RequiredTrait, TraitConstraints},
+    traits::{RequiredTrait, TraitConstraints},
     Type,
 };
 
 pub(super) fn try_generalize_definition<'c>(
     definition: &mut ast::Definition<'c>, t: Type, traits: TraitConstraints, cache: &mut ModuleCache<'c>,
 ) -> TraitConstraints {
-    if !should_generalize(&definition.expr) {
+    if !can_have_traits(&definition.expr) {
         return traits;
     }
+
+    let should_generalize = should_generalize(&definition.expr);
 
     let pattern = definition.pattern.as_mut();
     match is_mutually_recursive(pattern, cache) {
         MutualRecursionResult::No => {
             let typevars_in_fn = find_all_typevars(pattern.get_type().unwrap(), false, cache);
             let exposed_traits = traitchecker::resolve_traits(traits, &typevars_in_fn, cache);
-            bind_irrefutable_pattern(pattern, &t, &exposed_traits, true, cache);
+            bind_irrefutable_pattern(pattern, &t, &exposed_traits, should_generalize, cache);
             vec![]
         },
         MutualRecursionResult::YesGeneralizeLater => traits, // Do nothing
@@ -54,7 +56,7 @@ pub(super) fn try_generalize_definition<'c>(
                 let callsites = &cache[id].mutually_recursive_variables;
 
                 exposed_traits.append(&mut update_callsites(exposed_traits.clone(), callsites));
-                bind_irrefutable_pattern(pattern, &t, &exposed_traits, true, cache);
+                bind_irrefutable_pattern(pattern, &t, &exposed_traits, should_generalize, cache);
             }
 
             let root = cache.mutual_recursion_sets[id.0].root_definition;
@@ -65,7 +67,7 @@ pub(super) fn try_generalize_definition<'c>(
             let callsites = &cache[root].mutually_recursive_variables;
 
             exposed_traits.append(&mut update_callsites(exposed_traits.clone(), callsites));
-            bind_irrefutable_pattern(pattern, &t, &exposed_traits, true, cache);
+            bind_irrefutable_pattern(pattern, &t, &exposed_traits, should_generalize, cache);
 
             vec![]
         },
@@ -77,14 +79,8 @@ fn update_callsites(exposed_traits: Vec<RequiredTrait>, callsites: &Vec<Variable
 
     for callsite in callsites {
         ret.extend(exposed_traits.iter().cloned().map(|mut exposed| {
-            if exposed.callsite.id() != *callsite {
-                exposed.callsite = match exposed.callsite {
-                    Callsite::Direct(_) => Callsite::Indirect(*callsite, vec![exposed.signature.id]),
-                    Callsite::Indirect(_, mut ids) => {
-                        ids.push(exposed.signature.id);
-                        Callsite::Indirect(*callsite, ids)
-                    },
-                };
+            if exposed.callsite.target != *callsite {
+                exposed.callsite.path.push_back(exposed.signature.id);
             }
             exposed
         }));
@@ -103,6 +99,10 @@ fn should_generalize(ast: &ast::Ast) -> bool {
         ast::Ast::Lambda(lambda) => lambda.closure_environment.is_empty(),
         _ => false,
     }
+}
+
+fn can_have_traits(ast: &ast::Ast) -> bool {
+    matches!(ast, ast::Ast::Variable(_) | ast::Ast::Lambda(_))
 }
 
 enum MutualRecursionResult {

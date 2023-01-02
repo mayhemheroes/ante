@@ -1,0 +1,9 @@
+
+m = malloc
+f = free
+
+a = malloc 0 : Ptr U8
+b = malloc 0 : Ptr U32
+
+free a
+free b
