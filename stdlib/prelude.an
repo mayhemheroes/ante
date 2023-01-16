@@ -446,6 +446,7 @@ print_string (s: String) : Unit =
             c = deref_ptr off
             putchar c
             recur s (i + 1)
+        else ()
 
 print_c_string (s: Ptr Char) : Unit =
     loop s (i = 0) ->
@@ -453,6 +454,7 @@ print_c_string (s: Ptr Char) : Unit =
         if c != '\0' then
             putchar c
             recur s (i + 1)
+        else ()
 
 impl Print Bool with
     printne b =
