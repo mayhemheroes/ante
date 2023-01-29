@@ -18,8 +18,9 @@
 //! The reccomended starting point while reading through this pass is the `run`
 //! function which is called directly from `main`. This function sets up the
 //! Generator, walks the Ast, then optimizes and links the resulting Module.
-use crate::args::Args;
+use crate::cli::{Cli, EmitTarget};
 use crate::hir::{self, DefinitionId};
+use crate::lexer::token::FloatKind;
 use crate::util::{self, fmap, timing};
 
 use inkwell::basic_block::BasicBlock;
@@ -58,10 +59,11 @@ pub struct Generator<'context> {
     auto_derefs: HashSet<DefinitionId>,
 
     current_function_info: Option<DefinitionId>,
+    current_definition_name: Option<String>,
 }
 
 /// Codegen the given Ast, producing a binary file at the given path.
-pub fn run(path: &Path, ast: hir::Ast, args: &Args) {
+pub fn run(path: &Path, ast: hir::Ast, args: &Cli) {
     timing::start_time("LLVM codegen");
 
     let context = Context::create();
@@ -78,6 +80,7 @@ pub fn run(path: &Path, ast: hir::Ast, args: &Args) {
         definitions: HashMap::new(),
         auto_derefs: HashSet::new(),
         current_function_info: None,
+        current_definition_name: None,
     };
 
     // Codegen main, and all functions reachable from it
@@ -97,8 +100,9 @@ pub fn run(path: &Path, ast: hir::Ast, args: &Args) {
 
     // --show-ir: Dump the LLVM-IR of the generated module to stderr.
     // Useful to debug codegen
-    if args.show_ir {
+    if args.emit == Some(EmitTarget::Ir) {
         codegen.module.print_to_stderr();
+        return;
     }
 
     let binary_name = util::binary_name(&module_name);
@@ -240,7 +244,7 @@ impl<'g> Generator<'g> {
     fn convert_function_type(&mut self, f: &hir::FunctionType) -> PointerType<'g> {
         let parameters = fmap(&f.parameters, |param| self.convert_type(param).into());
         let ret = self.convert_type(&f.return_type);
-        ret.fn_type(&parameters, false).ptr_type(AddressSpace::Generic)
+        ret.fn_type(&parameters, false).ptr_type(AddressSpace::default())
     }
 
     fn convert_type(&mut self, typ: &hir::Type) -> BasicTypeEnum<'g> {
@@ -251,11 +255,12 @@ impl<'g> Generator<'g> {
                     PrimitiveType::Integer(kind) => {
                         self.context.custom_width_int_type(self.integer_bit_count(*kind)).into()
                     },
-                    PrimitiveType::Float => self.context.f64_type().into(),
+                    PrimitiveType::Float(FloatKind::F32) => self.context.f32_type().into(),
+                    PrimitiveType::Float(FloatKind::F64) => self.context.f64_type().into(),
                     PrimitiveType::Char => self.context.i8_type().into(),
                     PrimitiveType::Boolean => self.context.bool_type().into(),
                     PrimitiveType::Unit => self.context.bool_type().into(),
-                    PrimitiveType::Pointer => self.context.i8_type().ptr_type(AddressSpace::Generic).into(),
+                    PrimitiveType::Pointer => self.context.i8_type().ptr_type(AddressSpace::default()).into(),
                 }
             },
             hir::Type::Function(f) => self.convert_function_type(f).into(),
@@ -308,8 +313,11 @@ impl<'g> Generator<'g> {
         self.context.bool_type().const_int(value as u64, true).into()
     }
 
-    fn float_value(&self, value: f64) -> BasicValueEnum<'g> {
-        self.context.f64_type().const_float(value).into()
+    fn float_value(&self, value: f64, kind: FloatKind) -> BasicValueEnum<'g> {
+        match kind {
+            FloatKind::F32 => self.context.f32_type().const_float(value).into(),
+            FloatKind::F64 => self.context.f64_type().const_float(value).into(),
+        }
     }
 
     /// Perform codegen for a string literal. This will create a global
@@ -323,7 +331,7 @@ impl<'g> Generator<'g> {
 
         let value = global.as_pointer_value();
 
-        let cstring_type = self.context.i8_type().ptr_type(AddressSpace::Generic);
+        let cstring_type = self.context.i8_type().ptr_type(AddressSpace::default());
 
         let cast = self.builder.build_pointer_cast(value, cstring_type, "string_cast");
 
@@ -372,7 +380,7 @@ impl<'g> Generator<'g> {
         let alloca = self.builder.build_alloca(source_type, "alloca");
         self.builder.build_store(alloca, value);
 
-        let target_type = target_type.ptr_type(AddressSpace::Generic);
+        let target_type = target_type.ptr_type(AddressSpace::default());
         let cast = self.builder.build_pointer_cast(alloca, target_type, "cast");
         self.builder.build_load(cast, "union_cast")
     }
@@ -459,7 +467,7 @@ impl<'g> CodeGen<'g> for hir::Literal {
         match self {
             hir::Literal::Char(c) => generator.char_value(*c as u64),
             hir::Literal::Bool(b) => generator.bool_value(*b),
-            hir::Literal::Float(f) => generator.float_value(f64::from_bits(*f)),
+            hir::Literal::Float(f, kind) => generator.float_value(f64::from_bits(*f), *kind),
             hir::Literal::Integer(i, kind) => generator.integer_value(*i, *kind),
             hir::Literal::CString(s) => generator.cstring_value(s),
             hir::Literal::Unit => generator.unit_value(),
@@ -491,7 +499,9 @@ impl<'g> CodeGen<'g> for hir::Variable {
 impl<'g> CodeGen<'g> for hir::Lambda {
     fn codegen(&self, generator: &mut Generator<'g>) -> BasicValueEnum<'g> {
         let caller_block = generator.current_block();
-        let (function, function_value) = generator.function("lambda", &self.typ);
+        let name = generator.current_definition_name.take().unwrap_or_else(|| "lambda".into());
+
+        let (function, function_value) = generator.function(&name, &self.typ);
 
         // Bind each parameter node to the nth parameter of `function`
         for (i, parameter) in self.args.iter().enumerate() {
@@ -537,6 +547,7 @@ impl<'g> CodeGen<'g> for hir::Definition {
             }
 
             generator.current_function_info = Some(self.variable);
+            generator.current_definition_name = self.name.clone();
             let value = self.expr.codegen(generator);
             generator.definitions.insert(self.variable, value);
         }
@@ -553,47 +564,37 @@ impl<'g> CodeGen<'g> for hir::If {
         let then_block = generator.context.append_basic_block(current_function, "then");
         let end_block = generator.context.append_basic_block(current_function, "end_if");
 
-        if let Some(otherwise) = &self.otherwise {
-            // Setup conditional jump
-            let else_block = generator.context.append_basic_block(current_function, "else");
-            generator.builder.build_conditional_branch(condition.into_int_value(), then_block, else_block);
+        // Setup conditional jump
+        let else_block = generator.context.append_basic_block(current_function, "else");
+        generator.builder.build_conditional_branch(condition.into_int_value(), then_block, else_block);
 
-            generator.builder.position_at_end(then_block);
-            let (if_type, then_option) = generator.codegen_branch(&self.then, end_block);
+        generator.builder.position_at_end(then_block);
+        let (if_type, then_option) = generator.codegen_branch(&self.then, end_block);
 
-            generator.builder.position_at_end(else_block);
-            let (_, else_option) = generator.codegen_branch(otherwise, end_block);
+        generator.builder.position_at_end(else_block);
+        let (_, else_option) = generator.codegen_branch(&self.otherwise, end_block);
 
-            // Create phi at the end of the if beforehand
-            generator.builder.position_at_end(end_block);
+        // Create phi at the end of the if beforehand
+        generator.builder.position_at_end(end_block);
 
-            // Some of the branches may have terminated early. We need to check each case to
-            // determine which we should add to the phi or if we should even create a phi at all.
-            match (then_option, else_option) {
-                (Some((then_value, then_branch)), Some((else_value, else_branch))) => {
-                    let phi = generator.builder.build_phi(then_value.get_type(), "if_result");
-                    phi.add_incoming(&[(&then_value, then_branch), (&else_value, else_branch)]);
-                    phi.as_basic_value()
-                },
-                (Some((then_value, _)), None) => then_value,
-                (None, Some((else_value, _))) => else_value,
-                (None, None) => {
-                    generator.builder.build_unreachable();
+        // Some of the branches may have terminated early. We need to check each case to
+        // determine which we should add to the phi or if we should even create a phi at all.
+        match (then_option, else_option) {
+            (Some((then_value, then_branch)), Some((else_value, else_branch))) => {
+                let phi = generator.builder.build_phi(then_value.get_type(), "if_result");
+                phi.add_incoming(&[(&then_value, then_branch), (&else_value, else_branch)]);
+                phi.as_basic_value()
+            },
+            (Some((then_value, _)), None) => then_value,
+            (None, Some((else_value, _))) => else_value,
+            (None, None) => {
+                generator.builder.build_unreachable();
 
-                    // Block is unreachable but we still need to return an undef value.
-                    // If we return None the compiler would crash while compiling
-                    // `2 + if true return "uh" else return "oh"`
-                    Generator::undef_value(if_type)
-                },
-            }
-        } else {
-            generator.builder.build_conditional_branch(condition.into_int_value(), then_block, end_block);
-
-            generator.builder.position_at_end(then_block);
-            generator.codegen_branch(&self.then, end_block);
-
-            generator.builder.position_at_end(end_block);
-            generator.unit_value()
+                // Block is unreachable but we still need to return an undef value.
+                // If we return None the compiler would crash while compiling
+                // `2 + if true return "uh" else return "oh"`
+                Generator::undef_value(if_type)
+            },
         }
     }
 }
@@ -675,7 +676,7 @@ impl<'g> CodeGen<'g> for hir::Assignment {
 
         let rhs = self.rhs.codegen(generator);
 
-        let rhs_ptr = rhs.get_type().ptr_type(AddressSpace::Generic);
+        let rhs_ptr = rhs.get_type().ptr_type(AddressSpace::default());
         let lhs = generator.builder.build_pointer_cast(lhs, rhs_ptr, "bitcast");
 
         generator.builder.build_store(lhs, rhs);

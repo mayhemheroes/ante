@@ -554,7 +554,7 @@ parser!(type_annotation loc =
 );
 
 fn parse_type<'a, 'b>(input: Input<'a, 'b>) -> ParseResult<'a, 'b, Type<'b>> {
-    or(&[function_type, type_application, pair_type, basic_type], "type")(input)
+    or(&[function_type, pair_type, type_application, basic_type], "type")(input)
 }
 
 fn function_arg_type<'a, 'b>(input: Input<'a, 'b>) -> ParseResult<'a, 'b, Type<'b>> {
@@ -568,7 +568,9 @@ fn parse_type_no_pair<'a, 'b>(input: Input<'a, 'b>) -> ParseResult<'a, 'b, Type<
 fn basic_type<'a, 'b>(input: Input<'a, 'b>) -> ParseResult<'a, 'b, Type<'b>> {
     match input[0].0 {
         Token::IntegerType(_) => int_type(input),
-        Token::FloatType => float_type(input),
+        Token::FloatType(_) => float_type(input),
+        Token::PolymorphicIntType => polymorphic_int_type(input),
+        Token::PolymorphicFloatType => polymorphic_float_type(input),
         Token::CharType => char_type(input),
         Token::StringType => string_type(input),
         Token::PointerType => pointer_type(input),
@@ -644,8 +646,8 @@ fn argument<'a, 'b>(input: Input<'a, 'b>) -> AstResult<'a, 'b> {
         Token::Identifier(_) => variable(input),
         Token::TypeName(_) => or(&[variable, variant], "argument")(input),
         Token::StringLiteral(_) => string(input),
-        Token::IntegerLiteral(_, _) => integer(input),
-        Token::FloatLiteral(_) => float(input),
+        Token::IntegerLiteral(..) => integer(input),
+        Token::FloatLiteral(..) => float(input),
         Token::CharLiteral(_) => parse_char(input),
         Token::BooleanLiteral(_) => parse_bool(input),
         Token::UnitLiteral => unit(input),
@@ -659,8 +661,8 @@ fn pattern_argument<'a, 'b>(input: Input<'a, 'b>) -> AstResult<'a, 'b> {
     match input[0].0 {
         Token::Identifier(_) => variable(input),
         Token::StringLiteral(_) => string(input),
-        Token::IntegerLiteral(_, _) => integer(input),
-        Token::FloatLiteral(_) => float(input),
+        Token::IntegerLiteral(..) => integer(input),
+        Token::FloatLiteral(..) => float(input),
         Token::CharLiteral(_) => parse_char(input),
         Token::BooleanLiteral(_) => parse_bool(input),
         Token::UnitLiteral => unit(input),
@@ -702,19 +704,35 @@ parser!(variable loc =
     Ast::variable(module_prefix.unwrap_or_default(), name, loc)
 );
 
-parser!(string loc =
+parser!(string_literal loc =
     contents <- string_literal_token;
     Ast::string(contents, loc)
 );
 
+fn interpolated_expression<'a, 'b>(input: Input<'a, 'b>) -> AstResult<'a, 'b> {
+    bounded(Token::InterpolateLeft, expression, Token::InterpolateRight)(input)
+}
+
+parser!(interpolation loc =
+    lhs <- interpolated_expression;
+    rhs <- string_literal;
+    desugar::interpolate(lhs, rhs, loc)
+);
+
+parser!(string loc =
+    head <- string_literal;
+    tail <- many0(interpolation);
+    desugar::concatenate_strings(head, tail, loc)
+);
+
 parser!(integer loc =
-    value <- integer_literal_token;
-    Ast::integer(value.0, value.1, loc)
+    (value, kind) <- integer_literal_token;
+    Ast::integer(value, kind, loc)
 );
 
 parser!(float loc =
-    value <- float_literal_token;
-    Ast::float(value, loc)
+    (value, kind) <- float_literal_token;
+    Ast::float(value, kind, loc)
 );
 
 parser!(parse_char loc =
@@ -735,10 +753,19 @@ parser!(unit loc =
 parser!(function_type loc -> 'b Type<'b> =
     args <- delimited_trailing(function_arg_type, expect(Token::Subtract), false);
     varargs <- maybe(varargs);
-    _ <- expect(Token::RightArrow);
+    is_closure <- function_arrow;
     return_type <- parse_type;
-    Type::Function(args, Box::new(return_type), varargs.is_some(), loc)
+    Type::Function(args, Box::new(return_type), varargs.is_some(), is_closure, loc)
 );
+
+// Returns true if this function is a closure
+fn function_arrow<'a, 'b>(input: Input<'a, 'b>) -> ParseResult<'a, 'b, bool> {
+    match input[0].0 {
+        Token::RightArrow => Ok((&input[1..], false, input[0].1)),
+        Token::FatArrow => Ok((&input[1..], true, input[0].1)),
+        _ => Err(ParseError::InRule("function type", input[0].1)),
+    }
+}
 
 parser!(type_application loc -> 'b Type<'b> =
     type_constructor <- basic_type;
@@ -747,7 +774,7 @@ parser!(type_application loc -> 'b Type<'b> =
 );
 
 parser!(pair_type loc -> 'b Type<'b> =
-    first <- basic_type;
+    first <- or(&[type_application, basic_type], "type");
     _ <- expect(Token::Comma);
     rest !<- parse_type;
     Type::Pair(Box::new(first), Box::new(rest), loc)
@@ -755,12 +782,22 @@ parser!(pair_type loc -> 'b Type<'b> =
 
 parser!(int_type loc -> 'b Type<'b> =
     kind <- int_type_token;
-    Type::Integer(kind, loc)
+    Type::Integer(Some(kind), loc)
 );
 
 parser!(float_type loc -> 'b Type<'b> =
-    _ <- expect(Token::FloatType);
-    Type::Float(loc)
+    kind <- float_type_token;
+    Type::Float(Some(kind), loc)
+);
+
+parser!(polymorphic_int_type loc -> 'b Type<'b> =
+    _ <- expect(Token::PolymorphicIntType);
+    Type::Integer(None, loc)
+);
+
+parser!(polymorphic_float_type loc -> 'b Type<'b> =
+    _ <- expect(Token::PolymorphicFloatType);
+    Type::Float(None, loc)
 );
 
 parser!(char_type loc -> 'b Type<'b> =

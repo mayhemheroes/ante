@@ -7,6 +7,7 @@
 //! - All trait function calls are replaced with references to the exact
 //!   function to call statically (monomorphisation) or are passed in as
 //!   arguments to calling functions (boxing).
+mod closures;
 mod decision_tree_monomorphisation;
 mod definitions;
 mod handler;
@@ -25,7 +26,7 @@ pub struct DefinitionId(usize);
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Literal {
     Integer(u64, IntegerKind),
-    Float(u64),
+    Float(u64, FloatKind),
     CString(String),
     Char(char),
     Bool(bool),
@@ -110,7 +111,7 @@ impl From<Definition> for DefinitionInfo {
 pub struct If {
     pub condition: Box<Ast>,
     pub then: Box<Ast>,
-    pub otherwise: Option<Box<Ast>>,
+    pub otherwise: Box<Ast>,
     pub result_type: Type,
 }
 
@@ -242,6 +243,8 @@ pub enum Builtin {
     UnsignedToFloat(Box<Ast>, Type),
     FloatToSigned(Box<Ast>, Type),
     FloatToUnsigned(Box<Ast>, Type),
+    FloatPromote(Box<Ast>),
+    FloatDemote(Box<Ast>),
 
     BitwiseAnd(Box<Ast>, Box<Ast>),
     BitwiseOr(Box<Ast>, Box<Ast>),
@@ -305,6 +308,8 @@ macro_rules! dispatch_on_hir {
 }
 
 pub(crate) use dispatch_on_hir;
+
+use crate::lexer::token::FloatKind;
 
 // Rust won't let us impl<T: FmtAst> Display for T
 macro_rules! impl_display {

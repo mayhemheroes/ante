@@ -215,10 +215,24 @@ impl NameResolver {
             }
         }
 
-        // Otherwise, check globals/imports
-        if let Some(id) = self.global_scope().definitions.get(name) {
-            cache.definition_infos[id.0].uses += 1;
-            return Some(*id);
+        // Otherwise, check globals/imports.
+        // We must be careful here to separate items within this final FunctionScope:
+        // - True globals are at the first scope and shouldn't create closures
+        // - Anything after is local to a block, e.g. in a top-level if-then.
+        //   These items should create a closure if referenced.
+        let global_index = 0;
+        let function_scope = &self.scopes[global_index];
+
+        for (i, stack) in function_scope.iter().enumerate().rev() {
+            if i == 0 {
+                // Definition is globally visible, no need to create a closure
+                if let Some(id) = self.global_scope().definitions.get(name) {
+                    cache.definition_infos[id.0].uses += 1;
+                    return Some(*id);
+                }
+            } else if let Some(&from) = stack.definitions.get(name) {
+                return Some(self.create_closure(from, name, global_index, location, cache));
+            }
         }
 
         None
@@ -525,6 +539,49 @@ impl NameResolver {
 
         None
     }
+
+    fn validate_type_application<'c>(&self, constructor: &Type, args: &[Type], location: Location<'c>, cache: &mut ModuleCache<'c>) {
+        let expected = self.get_expected_type_argument_count(constructor, cache);
+        if args.len() != expected && !matches!(constructor, Type::TypeVariable(_)) {
+            let plural_s = if expected == 1 { "" } else { "s" };
+            let is_are = if args.len() == 1 { "is" } else { "are" };
+            error!(location, "Type {} expects {} argument{}, but {} {} given here", constructor.display(cache), expected, plural_s, args.len(), is_are);
+        }
+
+        // Check argument is an integer/float type (issue #146)
+        if let Some(first_arg) = args.get(0) {
+            match constructor {
+                Type::Primitive(PrimitiveType::IntegerType) => {
+                    if !matches!(first_arg, Type::Primitive(PrimitiveType::IntegerTag(_)) | Type::TypeVariable(_)) {
+                        error!(location, "Type {} is not an integer type", first_arg.display(cache));
+                    }
+                },
+                Type::Primitive(PrimitiveType::FloatType) => {
+                    if !matches!(first_arg, Type::Primitive(PrimitiveType::FloatTag(_)) | Type::TypeVariable(_)) {
+                        error!(location, "Type {} is not a float type", first_arg.display(cache));
+                    }
+                }
+                _ => (),
+            }
+        }
+    }
+
+    fn get_expected_type_argument_count(&self, constructor: &Type, cache: &ModuleCache) -> usize {
+        match constructor {
+            Type::Primitive(PrimitiveType::Ptr) => 1,
+            Type::Primitive(PrimitiveType::IntegerType) => 1,
+            Type::Primitive(PrimitiveType::FloatType) => 1,
+            Type::Primitive(_) => 0,
+            Type::Function(_) => 0,
+            // Type variables should be unbound before type checking
+            Type::TypeVariable(_) => 0,
+            Type::UserDefined(id) => cache[*id].args.len(),
+            Type::TypeApplication(_, _) => 0,
+            Type::Ref(_) => 1,
+            Type::Struct(_, _) => 0,
+            Type::Effects(_) => 0,
+        }
+    }
 }
 
 impl<'c> NameResolver {
@@ -607,17 +664,23 @@ impl<'c> NameResolver {
     /// Converts an ast::Type to a types::Type, expects all typevars to be in scope
     pub fn convert_type(&mut self, cache: &mut ModuleCache<'c>, ast_type: &ast::Type<'c>) -> Type {
         match ast_type {
-            ast::Type::Integer(kind, _) => Type::Primitive(PrimitiveType::IntegerType(*kind)),
-            ast::Type::Float(_) => Type::Primitive(PrimitiveType::FloatType),
+            ast::Type::Integer(Some(kind), _) => Type::int(*kind),
+            ast::Type::Integer(None, _) => Type::Primitive(PrimitiveType::IntegerType),
+            ast::Type::Float(Some(kind), _) => Type::float(*kind),
+            ast::Type::Float(None, _) => Type::Primitive(PrimitiveType::FloatType),
             ast::Type::Char(_) => Type::Primitive(PrimitiveType::CharType),
             ast::Type::String(_) => Type::UserDefined(STRING_TYPE),
             ast::Type::Pointer(_) => Type::Primitive(PrimitiveType::Ptr),
             ast::Type::Boolean(_) => Type::Primitive(PrimitiveType::BooleanType),
             ast::Type::Unit(_) => Type::UNIT,
-            ast::Type::Function(args, ret, is_varargs, _) => {
+            ast::Type::Function(args, ret, is_varargs, is_closure, _) => {
                 let parameters = fmap(args, |arg| self.convert_type(cache, arg));
                 let return_type = Box::new(self.convert_type(cache, ret));
-                let environment = Box::new(Type::UNIT);
+                let environment = Box::new(if *is_closure {
+                    cache.next_type_variable(self.let_binding_level)
+                } else {
+                    Type::UNIT
+                });
                 let effects = Box::new(cache.next_type_variable(self.let_binding_level));
                 let is_varargs = *is_varargs;
                 Type::Function(FunctionType { parameters, return_type, environment, is_varargs, effects })
@@ -644,6 +707,7 @@ impl<'c> NameResolver {
             ast::Type::TypeApplication(constructor, args, _) => {
                 let constructor = Box::new(self.convert_type(cache, constructor));
                 let args = fmap(args, |arg| self.convert_type(cache, arg));
+                self.validate_type_application(&constructor, &args, ast_type.locate(), cache);
                 Type::TypeApplication(constructor, args)
             },
             ast::Type::Pair(first, rest, location) => {
@@ -695,18 +759,21 @@ impl<'c> NameResolver {
         self.resolve_all_definitions(vec![ast].into_iter(), cache, definition);
     }
 
-    fn resolve_extern_definitions(&mut self, declaration: &mut ast::TypeAnnotation<'c>, cache: &mut ModuleCache<'c>) {
+    fn resolve_extern_definitions(&mut self, extern_: &mut ast::Extern<'c>, cache: &mut ModuleCache<'c>) {
         self.definitions_collected.clear();
         self.auto_declare = true;
-        self.push_type_variable_scope();
 
-        declaration.define(self, cache);
+        for declaration in &mut extern_.declarations {
+            self.push_type_variable_scope();
+            declaration.define(self, cache);
+            self.pop_type_variable_scope();
+        }
 
-        self.pop_type_variable_scope();
         self.auto_declare = false;
+
         for id in self.definitions_collected.iter() {
-            let declaration = trustme::extend_lifetime(declaration);
-            cache.definition_infos[id.0].definition = Some(DefinitionKind::Extern(declaration));
+            let extern_ = trustme::extend_lifetime(extern_);
+            cache.definition_infos[id.0].definition = Some(DefinitionKind::Extern(extern_));
         }
     }
 
@@ -954,11 +1021,9 @@ impl<'c> Resolvable<'c> for ast::If<'c> {
         self.then.define(resolver, cache);
         resolver.pop_scope(cache, true, None);
 
-        if let Some(otherwise) = &mut self.otherwise {
-            resolver.push_scope(cache);
-            otherwise.define(resolver, cache);
-            resolver.pop_scope(cache, true, None);
-        }
+        resolver.push_scope(cache);
+        self.otherwise.define(resolver, cache);
+        resolver.pop_scope(cache, true, None);
     }
 }
 
@@ -1375,11 +1440,7 @@ impl<'c> Resolvable<'c> for ast::Extern<'c> {
         // `let_binding_level + 1` will cause all trait functions to not be generalized.
         self.level = Some(resolver.let_binding_level);
         resolver.push_let_binding_level();
-
-        for declaration in self.declarations.iter_mut() {
-            resolver.resolve_extern_definitions(declaration, cache);
-        }
-
+        resolver.resolve_extern_definitions(self, cache);
         resolver.pop_let_binding_level();
     }
 

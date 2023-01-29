@@ -10,7 +10,7 @@
 //!   encompasses the whole rule. Most usages of parser! in the parser module
 //!   store this Location in the Ast node they create.
 use crate::error::location::Location;
-use crate::lexer::token::{IntegerKind, Token};
+use crate::lexer::token::{FloatKind, IntegerKind, Token};
 use crate::parser::error::{ParseError, ParseResult};
 
 pub type Input<'local, 'cache> = &'local [(Token, Location<'cache>)];
@@ -377,7 +377,7 @@ pub fn imported_item<'a, 'b>(input: Input<'a, 'b>) -> ParseResult<'a, 'b, String
 
 pub fn identifier<'a, 'b>(input: Input<'a, 'b>) -> ParseResult<'a, 'b, String> {
     match &input[0] {
-        (Token::StringType, location) => Ok((&input[1..], "string".to_owned(), *location)),
+        (Token::StringType, location) => Ok((&input[1..], "String".to_owned(), *location)),
         (Token::Identifier(name), location) => Ok((&input[1..], name.clone(), *location)),
         (Token::Invalid(c), location) => Err(ParseError::Fatal(Box::new(ParseError::LexerError(*c, *location)))),
         (_, location) => Err(ParseError::Expected(vec![Token::Identifier("identifier".to_owned())], *location)),
@@ -400,19 +400,19 @@ pub fn string_literal_token<'a, 'b>(input: Input<'a, 'b>) -> ParseResult<'a, 'b,
     }
 }
 
-pub fn integer_literal_token<'a, 'b>(input: Input<'a, 'b>) -> ParseResult<'a, 'b, (u64, IntegerKind)> {
+pub fn integer_literal_token<'a, 'b>(input: Input<'a, 'b>) -> ParseResult<'a, 'b, (u64, Option<IntegerKind>)> {
     match input[0] {
         (Token::IntegerLiteral(int, kind), location) => Ok((&input[1..], (int, kind), location)),
         (Token::Invalid(c), location) => Err(ParseError::Fatal(Box::new(ParseError::LexerError(c, location)))),
-        (_, location) => Err(ParseError::Expected(vec![Token::IntegerLiteral(0, IntegerKind::Unknown)], location)),
+        (_, location) => Err(ParseError::Expected(vec![Token::IntegerLiteral(0, None)], location)),
     }
 }
 
-pub fn float_literal_token<'a, 'b>(input: Input<'a, 'b>) -> ParseResult<'a, 'b, f64> {
+pub fn float_literal_token<'a, 'b>(input: Input<'a, 'b>) -> ParseResult<'a, 'b, (f64, Option<FloatKind>)> {
     match input[0] {
-        (Token::FloatLiteral(float), location) => Ok((&input[1..], float, location)),
+        (Token::FloatLiteral(float, kind), location) => Ok((&input[1..], (float, kind), location)),
         (Token::Invalid(c), location) => Err(ParseError::Fatal(Box::new(ParseError::LexerError(c, location)))),
-        (_, location) => Err(ParseError::Expected(vec![Token::FloatLiteral(0.0)], location)),
+        (_, location) => Err(ParseError::Expected(vec![Token::FloatLiteral(0.0, None)], location)),
     }
 }
 
@@ -435,6 +435,14 @@ pub fn bool_literal_token<'a, 'b>(input: Input<'a, 'b>) -> ParseResult<'a, 'b, b
 pub fn int_type_token<'a, 'b>(input: Input<'a, 'b>) -> ParseResult<'a, 'b, IntegerKind> {
     match input[0] {
         (Token::IntegerType(kind), location) => Ok((&input[1..], kind, location)),
+        (Token::Invalid(c), location) => Err(ParseError::Fatal(Box::new(ParseError::LexerError(c, location)))),
+        (_, location) => Err(ParseError::Expected(vec![Token::BooleanLiteral(true)], location)),
+    }
+}
+
+pub fn float_type_token<'a, 'b>(input: Input<'a, 'b>) -> ParseResult<'a, 'b, FloatKind> {
+    match input[0] {
+        (Token::FloatType(kind), location) => Ok((&input[1..], kind, location)),
         (Token::Invalid(c), location) => Err(ParseError::Fatal(Box::new(ParseError::LexerError(c, location)))),
         (_, location) => Err(ParseError::Expected(vec![Token::BooleanLiteral(true)], location)),
     }

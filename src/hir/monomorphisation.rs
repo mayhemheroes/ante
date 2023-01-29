@@ -3,6 +3,7 @@ use std::rc::Rc;
 
 use crate::cache::{DefinitionInfoId, DefinitionKind, ImplInfoId, ModuleCache, VariableId};
 use crate::hir;
+use crate::lexer::token::FloatKind;
 use crate::nameresolution::builtin::BUILTIN_ID;
 use crate::parser::ast;
 use crate::parser::ast::ClosureEnvironment;
@@ -16,7 +17,8 @@ use super::definitions::Definitions;
 use super::handler::Handler;
 use super::types::{IntegerKind, Type};
 
-const DEFAULT_INTEGER_KIND: IntegerKind = IntegerKind::I32;
+const DEFAULT_INTEGER: hir::Type = hir::Type::Primitive(hir::types::PrimitiveType::Integer(IntegerKind::I32));
+const DEFAULT_FLOAT: hir::Type = hir::Type::Primitive(hir::types::PrimitiveType::Float(FloatKind::F64));
 
 /// The type to bind most typevars to if they are still unbound when we codegen them.
 const UNBOUND_TYPE: types::Type = types::Type::Primitive(types::PrimitiveType::UnitType);
@@ -113,7 +115,7 @@ impl<'c> Context<'c> {
     pub fn monomorphise(&mut self, ast: &ast::Ast<'c>) -> hir::Ast {
         use ast::Ast::*;
         match ast {
-            Literal(literal) => self.monomorphise_literal(literal),
+            Literal(literal) => self.monomorphise_literal(literal, literal.typ.as_ref().unwrap()),
             Variable(variable) => self.monomorphise_variable(variable),
             Lambda(lambda) => self.monomorphise_lambda(lambda),
             FunctionCall(call) => self.monomorphise_call(call),
@@ -154,7 +156,7 @@ impl<'c> Context<'c> {
                 for bindings in self.monomorphisation_bindings.iter().rev() {
                     match bindings.get(&id) {
                         Some(TypeVariable(id2) | Ref(id2)) => return self.find_binding(*id2, fuel),
-                        Some(binding) => return Ok(&binding),
+                        Some(binding) => return Ok(binding),
                         None => (),
                     }
                 }
@@ -308,12 +310,19 @@ impl<'c> Context<'c> {
         use types::PrimitiveType::*;
         use types::Type::*;
         match typ {
-            Primitive(IntegerType(kind)) => self.integer_bit_count(*kind) as usize / 8,
-            Primitive(FloatType) => 8,
+            Primitive(IntegerTag(kind)) => self.integer_bit_count(*kind) as usize / 8,
+            Primitive(FloatTag(FloatKind::F32)) => 4,
+            Primitive(FloatTag(FloatKind::F64)) => 8,
             Primitive(CharType) => 1,
             Primitive(BooleanType) => 1,
             Primitive(UnitType) => 1,
             Primitive(Ptr) => Self::ptr_size(),
+            Primitive(IntegerType) => {
+                unreachable!("'Int' type constructor without arguments found during size_of_type")
+            },
+            Primitive(FloatType) => {
+                unreachable!("'Float' type constructor without arguments found during size_of_type")
+            },
 
             Function(..) => Self::ptr_size(),
 
@@ -330,6 +339,18 @@ impl<'c> Context<'c> {
                     self.size_of_user_defined_type(id, args)
                 },
                 Ok(Primitive(Ptr)) => Self::ptr_size(),
+                Ok(Primitive(IntegerType)) => {
+                    match self.follow_bindings_shallow(&args[0]) {
+                        Ok(typ) => self.size_of_type(&typ.clone()),
+                        Err(_) => 4, // size_of DEFAULT_INTEGER
+                    }
+                },
+                Ok(Primitive(FloatType)) => {
+                    match self.follow_bindings_shallow(&args[0]) {
+                        Ok(typ) => self.size_of_type(&typ.clone()),
+                        Err(_) => 8, // size_of DEFAULT_FLOAT
+                    }
+                },
                 _ => unreachable!("Kind error inside size_of_type"),
             },
 
@@ -349,11 +370,13 @@ impl<'c> Context<'c> {
     fn convert_primitive_type(&mut self, typ: &types::PrimitiveType) -> Type {
         use types::PrimitiveType::*;
         Type::Primitive(match typ {
-            IntegerType(kind) => {
+            IntegerTag(kind) => {
                 let kind = self.convert_integer_kind(*kind);
                 hir::types::PrimitiveType::Integer(kind)
             },
-            FloatType => hir::types::PrimitiveType::Float,
+            FloatTag(kind) => hir::types::PrimitiveType::Float(*kind),
+            IntegerType => unreachable!("Unbound Int type in convert_primitive_type"),
+            FloatType => unreachable!("Unbound Float type in convert_primitive_type"),
             CharType => hir::types::PrimitiveType::Char,
             BooleanType => hir::types::PrimitiveType::Boolean,
             UnitType => hir::types::PrimitiveType::Unit,
@@ -450,8 +473,12 @@ impl<'c> Context<'c> {
         self.convert_type_inner(typ, RECURSION_LIMIT)
     }
 
+    fn is_type_variable(&self, typ: &types::Type) -> bool {
+        self.follow_bindings_shallow(typ).is_err()
+    }
+
     pub fn convert_type_inner(&mut self, typ: &types::Type, fuel: u32) -> Type {
-        use types::PrimitiveType::Ptr;
+        use types::PrimitiveType;
         use types::Type::*;
 
         if fuel == 0 {
@@ -500,7 +527,23 @@ impl<'c> Context<'c> {
                 let typ = self.follow_bindings_shallow(typ);
 
                 match typ {
-                    Ok(Primitive(Ptr) | Ref(_)) => Type::Primitive(hir::PrimitiveType::Pointer),
+                    Ok(Primitive(PrimitiveType::Ptr) | Ref(_)) => Type::Primitive(hir::PrimitiveType::Pointer),
+                    Ok(Primitive(PrimitiveType::IntegerType)) => {
+                        if self.is_type_variable(&args[0]) {
+                            // Default to i32
+                            DEFAULT_INTEGER
+                        } else {
+                            self.convert_type_inner(&args[0], fuel)
+                        }
+                    },
+                    Ok(Primitive(PrimitiveType::FloatType)) => {
+                        if self.is_type_variable(&args[0]) {
+                            // Default to f64
+                            DEFAULT_FLOAT
+                        } else {
+                            self.convert_type_inner(&args[0], fuel)
+                        }
+                    },
                     Ok(UserDefined(id)) => {
                         let id = *id;
                         self.convert_user_defined_type(id, args)
@@ -538,19 +581,6 @@ impl<'c> Context<'c> {
     fn convert_integer_kind(&self, kind: crate::lexer::token::IntegerKind) -> IntegerKind {
         use crate::lexer::token::IntegerKind;
         match kind {
-            IntegerKind::Unknown => DEFAULT_INTEGER_KIND,
-            IntegerKind::Inferred(id) => {
-                use types::PrimitiveType;
-                use types::Type::*;
-
-                match self.find_binding(id, RECURSION_LIMIT) {
-                    Ok(Primitive(PrimitiveType::IntegerType(kind))) => self.convert_integer_kind(*kind),
-                    Err(_) => DEFAULT_INTEGER_KIND,
-                    Ok(other) => {
-                        unreachable!("convert_integer_kind called with non-integer type {}", other.display(&self.cache))
-                    },
-                }
-            },
             IntegerKind::I8 => hir::IntegerKind::I8,
             IntegerKind::I16 => hir::IntegerKind::I16,
             IntegerKind::I32 => hir::IntegerKind::I32,
@@ -564,16 +594,25 @@ impl<'c> Context<'c> {
         }
     }
 
-    fn monomorphise_literal(&mut self, literal: &ast::Literal) -> hir::Ast {
+    fn monomorphise_literal(&mut self, literal: &ast::Literal, typ: &types::Type) -> hir::Ast {
         use hir::Ast::*;
         use hir::Literal::*;
 
         match &literal.kind {
-            ast::LiteralKind::Integer(n, kind) => {
-                let kind = self.convert_integer_kind(*kind);
+            ast::LiteralKind::Integer(n, _) => {
+                let kind = match self.convert_type(typ) {
+                    Type::Primitive(hir::PrimitiveType::Integer(kind)) => kind,
+                    other => unreachable!("monomorphise_literal: expected integer type, found {}", other),
+                };
                 Literal(Integer(*n, kind))
             },
-            ast::LiteralKind::Float(f) => Literal(Float(*f)),
+            ast::LiteralKind::Float(f, _) => {
+                let kind = match self.convert_type(typ) {
+                    Type::Primitive(hir::PrimitiveType::Float(kind)) => kind,
+                    other => unreachable!("monomorphise_literal: expected float type, found {}", other),
+                };
+                Literal(Float(*f, kind))
+            },
             ast::LiteralKind::String(s) => {
                 let len = Literal(Integer(s.len() as u64, IntegerKind::Usz));
                 let c_string = Literal(CString(s.clone()));
@@ -708,7 +747,7 @@ impl<'c> Context<'c> {
 
             match &required_trait.callsite {
                 Callsite::Direct(callsite) => {
-                    for (mut path, impl_) in bindings.to_vec() {
+                    for (mut path, impl_) in bindings.iter().cloned() {
                         if !path.is_empty() {
                             let top = path.remove(0);
                             new_impls
@@ -823,7 +862,6 @@ impl<'c> Context<'c> {
         };
 
         self.impl_mappings.pop();
-
         self.pop_monomorphisation_bindings(instantiation_mapping, info);
         value
     }
@@ -876,7 +914,7 @@ impl<'c> Context<'c> {
         def
     }
 
-    fn fresh_variable(&mut self) -> hir::Variable {
+    pub fn fresh_variable(&mut self) -> hir::Variable {
         hir::Variable { definition: None, definition_id: self.next_unique_id(), name: None }
     }
 
@@ -900,7 +938,8 @@ impl<'c> Context<'c> {
     fn monomorphise_nonlocal_definition(
         &mut self, definition: &ast::Definition<'c>, definition_id: hir::DefinitionId, name: String,
     ) -> Definition {
-        let value = self.monomorphise(&*definition.expr);
+        let value = self.monomorphise(&definition.expr);
+        let value = self.fix_recursive_closure_calls(value, definition, definition_id);
 
         let mut expr = Box::new(value);
 
@@ -967,7 +1006,7 @@ impl<'c> Context<'c> {
                 for (i, arg_pattern) in call.args.iter().enumerate() {
                     let arg_type = self.follow_all_bindings(arg_pattern.get_type().unwrap());
 
-                    let extract = self.extract(variable.clone().into(), i as u32);
+                    let extract = Self::extract(variable.clone().into(), i as u32);
 
                     let (definition, id) = self.fresh_definition(extract, None);
                     definitions.push(definition);
@@ -989,12 +1028,11 @@ impl<'c> Context<'c> {
                 let args = fmap(&function_type.parameters, |_| self.fresh_variable());
 
                 let mut tuple_args = Vec::with_capacity(args.len() + 1);
-                let mut tuple_size =
-                    function_type.parameters.iter().map(|parameter| self.size_of_monomorphised_type(parameter)).sum();
+                let mut tuple_size = function_type.parameters.iter().map(Self::size_of_monomorphised_type).sum();
 
                 if let Some(tag) = tag {
                     tuple_args.push(tag_value(*tag));
-                    tuple_size += self.size_of_monomorphised_type(&Self::tag_type());
+                    tuple_size += Self::size_of_monomorphised_type(&Self::tag_type());
                 }
 
                 tuple_args.extend(args.iter().cloned().map(Into::into));
@@ -1018,7 +1056,7 @@ impl<'c> Context<'c> {
                 None => unit_literal(),
                 Some(tag) => {
                     let value = tag_value(*tag);
-                    let size = self.size_of_monomorphised_type(&Self::tag_type());
+                    let size = Self::size_of_monomorphised_type(&Self::tag_type());
                     self.make_reinterpret_cast(value, size, typ)
                 },
             },
@@ -1031,7 +1069,7 @@ impl<'c> Context<'c> {
     /// Create a reinterpret_cast instruction for the given Ast value.
     /// arg_type_size is the size of the value represented by the given ast, in bytes.
     fn make_reinterpret_cast(&mut self, ast: hir::Ast, mut arg_type_size: u32, target_type: Type) -> hir::Ast {
-        let target_size = self.size_of_monomorphised_type(&target_type);
+        let target_size = Self::size_of_monomorphised_type(&target_type);
         assert!(arg_type_size <= target_size);
 
         if arg_type_size == target_size {
@@ -1048,14 +1086,15 @@ impl<'c> Context<'c> {
             }
         }
 
-        hir::Ast::ReinterpretCast(hir::ReinterpretCast { lhs: Box::new(self.tuple(padded)), target_type })
+        hir::Ast::ReinterpretCast(hir::ReinterpretCast { lhs: Box::new(tuple(padded)), target_type })
     }
 
-    fn size_of_monomorphised_type(&self, typ: &Type) -> u32 {
+    fn size_of_monomorphised_type(typ: &Type) -> u32 {
+        use hir::types::PrimitiveType;
         match typ {
             Type::Primitive(p) => {
                 match p {
-                    hir::types::PrimitiveType::Integer(kind) => {
+                    PrimitiveType::Integer(kind) => {
                         use IntegerKind::*;
                         match kind {
                             I8 | U8 => 1,
@@ -1065,15 +1104,16 @@ impl<'c> Context<'c> {
                             Isz | Usz => Self::ptr_size() as u32,
                         }
                     },
-                    hir::types::PrimitiveType::Float => 8,
-                    hir::types::PrimitiveType::Char => 1,
-                    hir::types::PrimitiveType::Boolean => 1,
-                    hir::types::PrimitiveType::Unit => 1, // TODO: this can depend on the backend
-                    hir::types::PrimitiveType::Pointer => Self::ptr_size() as u32,
+                    PrimitiveType::Float(FloatKind::F32) => 4,
+                    PrimitiveType::Float(FloatKind::F64) => 8,
+                    PrimitiveType::Char => 1,
+                    PrimitiveType::Boolean => 1,
+                    PrimitiveType::Unit => 1, // TODO: this can depend on the backend
+                    PrimitiveType::Pointer => Self::ptr_size() as u32,
                 }
             },
             Type::Function(_) => Self::ptr_size() as u32, // Closures would be represented as tuples
-            Type::Tuple(fields) => fields.iter().map(|f| self.size_of_monomorphised_type(f)).sum(),
+            Type::Tuple(fields) => fields.iter().map(Self::size_of_monomorphised_type).sum(),
         }
     }
 
@@ -1149,8 +1189,8 @@ impl<'c> Context<'c> {
                 env.clone()
             } else {
                 let param_ast: hir::Ast = env.clone().into();
-                let extract_var_in_env = self.extract(param_ast.clone(), 0);
-                let extract_rest_of_env = self.extract(param_ast, 1);
+                let extract_var_in_env = Self::extract(param_ast.clone(), 0);
+                let extract_rest_of_env = Self::extract(param_ast, 1);
 
                 let (definition, definition_id) = self.fresh_definition(extract_var_in_env, Some(name.clone()));
                 let (rest_env_def, rest_env_var) = self.fresh_definition(extract_rest_of_env, None);
@@ -1158,7 +1198,7 @@ impl<'c> Context<'c> {
                 definitions.push(definition);
                 definitions.push(rest_env_def);
 
-                env = hir::Variable { definition_id: rest_env_var, definition: None, name: None }.into();
+                env = hir::Variable { definition_id: rest_env_var, definition: None, name: None };
                 hir::Variable { definition_id, definition: None, name: None }
             };
 
@@ -1175,32 +1215,29 @@ impl<'c> Context<'c> {
     fn pack_closure_environment(&mut self, function: hir::Ast, env: &ClosureEnvironment) -> hir::Ast {
         let env = env
             .iter()
-            .map(|(outer_var, (var_id, _, bindings))| {
-                let typ = self.cache[*outer_var].typ.as_ref().unwrap().clone().into_monotype();
+            .map(|(outer_var, (var_id, inner_var, bindings))| {
+                // use the type from the inner variable. The outer one may be generalized
+                let typ = self.cache[*inner_var].typ.as_ref().unwrap().clone().into_monotype();
                 let definition = self.monomorphise_definition_id(*outer_var, *var_id, &typ, bindings);
                 definition.reference()
             })
             .collect();
 
-        let env = self.make_closure_environment(env);
-        self.tuple(vec![function, env])
+        let env = Self::make_closure_environment(env);
+        tuple(vec![function, env])
     }
 
     // This needs to match the packing done in typechecker::infer_closure_environment
-    fn make_closure_environment(&mut self, mut env: VecDeque<hir::Ast>) -> hir::Ast {
+    fn make_closure_environment(mut env: VecDeque<hir::Ast>) -> hir::Ast {
         if env.is_empty() {
             unit_literal()
         } else if env.len() == 1 {
             env.pop_back().unwrap()
         } else {
             let first = env.pop_front().unwrap();
-            let rest = self.make_closure_environment(env);
-            self.tuple(vec![first, rest])
+            let rest = Self::make_closure_environment(env);
+            tuple(vec![first, rest])
         }
-    }
-
-    fn tuple(&self, fields: Vec<hir::Ast>) -> hir::Ast {
-        hir::Ast::Tuple(hir::Tuple { fields })
     }
 
     fn size_of_type_arg0(&mut self, ptr_type: &types::Type) -> u32 {
@@ -1262,6 +1299,8 @@ impl<'c> Context<'c> {
             "UnsignedToFloat" => cast(self, UnsignedToFloat),
             "FloatToSigned" => cast(self, FloatToSigned),
             "FloatToUnsigned" => cast(self, FloatToUnsigned),
+            "FloatPromote" => FloatPromote(Box::new(self.monomorphise(&args[1]))),
+            "FloatDemote" => FloatDemote(Box::new(self.monomorphise(&args[1]))),
 
             "BitwiseAnd" => binary(self, BitwiseAnd),
             "BitwiseOr" => binary(self, BitwiseOr),
@@ -1318,8 +1357,8 @@ impl<'c> Context<'c> {
                         // Extract the function from the closure
                         let (function_definition, id) = self.fresh_definition(function, None);
                         let function_variable = id.to_variable();
-                        let function = Box::new(self.extract(function_variable.clone(), 0));
-                        let environment = self.extract(function_variable, 1);
+                        let function = Box::new(Self::extract(function_variable.clone(), 0));
+                        let environment = Self::extract(function_variable, 1);
                         args.push(environment);
 
                         hir::Ast::Sequence(hir::Sequence {
@@ -1385,7 +1424,7 @@ impl<'c> Context<'c> {
     fn monomorphise_if(&mut self, if_: &ast::If<'c>) -> hir::Ast {
         let condition = Box::new(self.monomorphise(&if_.condition));
         let then = Box::new(self.monomorphise(&if_.then));
-        let otherwise = if_.otherwise.as_ref().map(|e| Box::new(self.monomorphise(e)));
+        let otherwise = Box::new(self.monomorphise(&if_.otherwise));
         let result_type = self.convert_type(if_.typ.as_ref().unwrap());
 
         hir::Ast::If(hir::If { condition, then, otherwise, result_type })
@@ -1422,12 +1461,10 @@ impl<'c> Context<'c> {
         }
     }
 
-    fn get_field_offset(&self, collection_type: &hir::Type, field_index: u32) -> u32 {
+    fn get_field_offset(collection_type: &hir::Type, field_index: u32) -> u32 {
         match collection_type {
             Type::Primitive(_) | Type::Function(_) => unreachable!(),
-            Type::Tuple(fields) => {
-                fields.iter().map(|field| self.size_of_monomorphised_type(field)).take(field_index as usize).sum()
-            },
+            Type::Tuple(fields) => fields.iter().map(Self::size_of_monomorphised_type).take(field_index as usize).sum(),
         }
     }
 
@@ -1448,16 +1485,16 @@ impl<'c> Context<'c> {
         // If our collection type is a ref we do a ptr offset instead of a direct access
         match (ref_type, member_access.is_offset) {
             (Some(elem_type), true) => {
-                let offset = self.get_field_offset(&elem_type, index);
+                let offset = Self::get_field_offset(&elem_type, index);
                 offset_ptr(lhs, offset as u64)
             },
             (Some(elem_type), false) => {
                 let lhs = hir::Ast::Builtin(hir::Builtin::Deref(Box::new(lhs), elem_type));
-                self.extract(lhs, index)
+                Self::extract(lhs, index)
             },
             _ => {
                 assert!(!member_access.is_offset);
-                self.extract(lhs, index)
+                Self::extract(lhs, index)
             },
         }
     }
@@ -1472,7 +1509,7 @@ impl<'c> Context<'c> {
         hir::Ast::Assignment(hir::Assignment { lhs: Box::new(lhs), rhs: Box::new(self.monomorphise(&assignment.rhs)) })
     }
 
-    pub fn extract(&self, ast: hir::Ast, member_index: u32) -> hir::Ast {
+    pub fn extract(ast: hir::Ast, member_index: u32) -> hir::Ast {
         use hir::{
             Ast,
             Builtin::{Deref, Offset},
@@ -1492,7 +1529,7 @@ impl<'c> Context<'c> {
                 let offset: u32 = elems
                     .into_iter()
                     .take(member_index as usize)
-                    .map(|typ| self.size_of_monomorphised_type(&typ))
+                    .map(|typ| Self::size_of_monomorphised_type(&typ))
                     .sum();
 
                 if offset == 0 {
@@ -1517,6 +1554,10 @@ impl<'c> Context<'c> {
         self.handlers.pop();
         ret
     }
+}
+
+fn tuple(fields: Vec<hir::Ast>) -> hir::Ast {
+    hir::Ast::Tuple(hir::Tuple { fields })
 }
 
 fn unit_literal() -> hir::Ast {

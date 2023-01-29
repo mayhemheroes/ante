@@ -3,7 +3,7 @@
 //! each compiler phase. The compiler as a whole is separated into
 //! the following phases (in order):
 //!
-//! lexing -> parsing -> name resolution -> type inference -> lifetime inference -> codegen
+//! lexing -> parsing -> name resolution -> type inference -> monomorphisation -> codegen
 //!
 //! Each phase corresponds to a source folder with roughly the same name (though the codegen
 //! folder is named "llvm"), and each phase after parsing operates by traversing the AST.
@@ -21,8 +21,8 @@ mod util;
 
 #[macro_use]
 mod error;
-mod args;
 mod cache;
+mod cli;
 
 #[macro_use]
 mod hir;
@@ -38,12 +38,13 @@ use cache::ModuleCache;
 use lexer::Lexer;
 use nameresolution::NameResolver;
 
-use clap::StructOpt;
+use clap::{CommandFactory, Parser};
+use clap_complete as clap_cmp;
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{stdout, BufReader, Read};
 use std::path::Path;
 
-use crate::args::Backend;
+use crate::cli::{Backend, Cli, Completions, EmitTarget};
 
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -74,6 +75,12 @@ fn print_definition_types(cache: &ModuleCache) {
     }
 }
 
+fn print_completions<G: clap_cmp::Generator>(gen: G) {
+    let mut cmd = Cli::command();
+    let name = cmd.get_name().to_string();
+    clap_cmp::generate(gen, &mut cmd, name, &mut stdout());
+}
+
 /// Convenience macro for unwrapping a Result or printing an error message and returning () on Err.
 macro_rules! expect {( $result:expr , $fmt_string:expr $( , $($msg:tt)* )? ) => ({
     match $result {
@@ -86,8 +93,14 @@ macro_rules! expect {( $result:expr , $fmt_string:expr $( , $($msg:tt)* )? ) => 
 });}
 
 pub fn main() {
-    let args = args::Args::parse();
+    if let Ok(Completions { shell_completion }) = Completions::try_parse() {
+        print_completions(shell_completion);
+    } else {
+        compile(Cli::parse())
+    }
+}
 
+fn compile(args: Cli) {
     // Setup the cache and read from the first file
     let filename = Path::new(&args.file);
     let file = File::open(filename);
@@ -139,8 +152,9 @@ pub fn main() {
     }
 
     let hir = hir::monomorphise(ast, cache);
-    if args.show_hir {
+    if args.emit == Some(EmitTarget::Hir) {
         println!("{}", hir);
+        return;
     }
 
     // Phase 5: Lifetime inference

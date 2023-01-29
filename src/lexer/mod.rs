@@ -42,7 +42,14 @@ use crate::error::location::{EndPosition, Locatable, Location, Position};
 use std::collections::HashMap;
 use std::path::Path;
 use std::str::Chars;
-use token::{IntegerKind, LexerError, Token};
+use token::{FloatKind, IntegerKind, LexerError, Token};
+
+#[derive(Clone)]
+struct OpenBraces {
+    parenthesis: usize,
+    curly: usize,
+    square: usize,
+}
 
 #[derive(Clone)]
 pub struct Lexer<'cache, 'contents> {
@@ -58,6 +65,8 @@ pub struct Lexer<'cache, 'contents> {
     previous_token_expects_indent: bool,
     chars: Chars<'contents>,
     keywords: HashMap<&'static str, Token>,
+    open_braces: OpenBraces,
+    pending_interpolations: Vec<usize>,
 }
 
 /// The lexer maintains a stack of IndentLevels to remember
@@ -93,23 +102,26 @@ type IterElem<'a> = Option<(Token, Location<'a>)>;
 impl<'cache, 'contents> Lexer<'cache, 'contents> {
     pub fn get_keywords() -> HashMap<&'static str, Token> {
         vec![
-            ("i8", Token::IntegerType(IntegerKind::I8)),
-            ("i16", Token::IntegerType(IntegerKind::I16)),
-            ("i32", Token::IntegerType(IntegerKind::I32)),
-            ("i64", Token::IntegerType(IntegerKind::I64)),
-            ("isz", Token::IntegerType(IntegerKind::Isz)),
-            ("u8", Token::IntegerType(IntegerKind::U8)),
-            ("u16", Token::IntegerType(IntegerKind::U16)),
-            ("u32", Token::IntegerType(IntegerKind::U32)),
-            ("u64", Token::IntegerType(IntegerKind::U64)),
-            ("usz", Token::IntegerType(IntegerKind::Usz)),
-            ("float", Token::FloatType),
-            ("char", Token::CharType),
-            ("string", Token::StringType),
+            ("I8", Token::IntegerType(IntegerKind::I8)),
+            ("I16", Token::IntegerType(IntegerKind::I16)),
+            ("I32", Token::IntegerType(IntegerKind::I32)),
+            ("I64", Token::IntegerType(IntegerKind::I64)),
+            ("Isz", Token::IntegerType(IntegerKind::Isz)),
+            ("U8", Token::IntegerType(IntegerKind::U8)),
+            ("U16", Token::IntegerType(IntegerKind::U16)),
+            ("U32", Token::IntegerType(IntegerKind::U32)),
+            ("U64", Token::IntegerType(IntegerKind::U64)),
+            ("Usz", Token::IntegerType(IntegerKind::Usz)),
+            ("F32", Token::FloatType(FloatKind::F32)),
+            ("F64", Token::FloatType(FloatKind::F64)),
+            ("Int", Token::PolymorphicIntType),
+            ("Float", Token::PolymorphicFloatType),
+            ("Char", Token::CharType),
+            ("String", Token::StringType),
             ("Ptr", Token::PointerType),
-            ("bool", Token::BooleanType),
-            ("unit", Token::UnitType),
-            ("ref", Token::Ref),
+            ("Bool", Token::BooleanType),
+            ("Unit", Token::UnitType),
+            ("Ref", Token::Ref),
             ("mut", Token::Mut),
             ("true", Token::BooleanLiteral(true)),
             ("false", Token::BooleanLiteral(false)),
@@ -165,6 +177,8 @@ impl<'cache, 'contents> Lexer<'cache, 'contents> {
             previous_token_expects_indent: false,
             chars,
             keywords: Lexer::get_keywords(),
+            open_braces: OpenBraces { parenthesis: 0, curly: 0, square: 0 },
+            pending_interpolations: Vec::new(),
         }
     }
 
@@ -233,7 +247,7 @@ impl<'cache, 'contents> Lexer<'cache, 'contents> {
     fn lex_integer(&mut self) -> String {
         let start = self.current_position.index;
 
-        while !self.at_end_of_input() && (self.current.is_digit(10) || self.current == '_') {
+        while !self.at_end_of_input() && (self.current.is_ascii_digit() || self.current == '_') {
             self.advance();
         }
 
@@ -241,7 +255,30 @@ impl<'cache, 'contents> Lexer<'cache, 'contents> {
         self.file_contents[start..end].replace('_', "")
     }
 
-    fn lex_integer_suffix(&mut self) -> Result<IntegerKind, Token> {
+    fn lex_integer_suffix(&mut self) -> Result<Option<IntegerKind>, Token> {
+        let start = self.current_position.index;
+        while self.current.is_alphanumeric() || self.current == '_' {
+            self.advance();
+        }
+
+        let word = &self.file_contents[start..self.current_position.index];
+        Ok(Some(match word {
+            "i8" => IntegerKind::I8,
+            "u8" => IntegerKind::U8,
+            "i16" => IntegerKind::I16,
+            "u16" => IntegerKind::U16,
+            "i32" => IntegerKind::I32,
+            "u32" => IntegerKind::U32,
+            "i64" => IntegerKind::I64,
+            "u64" => IntegerKind::U64,
+            "isz" => IntegerKind::Isz,
+            "usz" => IntegerKind::Usz,
+            "" => return Ok(None),
+            _ => return Err(Token::Invalid(LexerError::InvalidIntegerSuffx)),
+        }))
+    }
+
+    fn lex_float_suffix(&mut self) -> Result<Option<FloatKind>, Token> {
         let start = self.current_position.index;
         while self.current.is_alphanumeric() || self.current == '_' {
             self.advance();
@@ -249,30 +286,27 @@ impl<'cache, 'contents> Lexer<'cache, 'contents> {
 
         let word = &self.file_contents[start..self.current_position.index];
         match word {
-            "i8" => Ok(IntegerKind::I8),
-            "u8" => Ok(IntegerKind::U8),
-            "i16" => Ok(IntegerKind::I16),
-            "u16" => Ok(IntegerKind::U16),
-            "i32" => Ok(IntegerKind::I32),
-            "u32" => Ok(IntegerKind::U32),
-            "i64" => Ok(IntegerKind::I64),
-            "u64" => Ok(IntegerKind::U64),
-            "isz" => Ok(IntegerKind::Isz),
-            "usz" => Ok(IntegerKind::Usz),
-            "" => Ok(IntegerKind::Unknown),
-            _ => Err(Token::Invalid(LexerError::InvalidIntegerSuffx)),
+            "f" => Ok(Some(FloatKind::F32)),
+            "f32" => Ok(Some(FloatKind::F32)),
+            "f64" => Ok(Some(FloatKind::F64)),
+            "" => Ok(None),
+            _ => Err(Token::Invalid(LexerError::InvalidFloatSuffx)),
         }
     }
 
     fn lex_number(&mut self) -> IterElem<'cache> {
         let integer_string = self.lex_integer();
 
-        if self.current == '.' && self.next.is_digit(10) {
+        if self.current == '.' && self.next.is_ascii_digit() {
             self.advance();
             let float_string = integer_string + "." + &self.lex_integer();
-
             let float = float_string.parse().unwrap();
-            Some((Token::FloatLiteral(float), self.locate()))
+            let location = self.locate();
+
+            match self.lex_float_suffix() {
+                Ok(suffix) => Some((Token::FloatLiteral(float, suffix), location)),
+                Err(lexer_error) => Some((lexer_error, location)),
+            }
         } else {
             let integer = integer_string.parse().unwrap();
             let location = self.locate();
@@ -288,17 +322,15 @@ impl<'cache, 'contents> Lexer<'cache, 'contents> {
 
         if self.current.is_numeric() {
             self.lex_number().map(|(token, location)| {
-                (
-                    match token {
-                        Token::IntegerLiteral(x, kind) => {
-                            let x = format!("-{}", x).parse::<i64>().unwrap();
-                            Token::IntegerLiteral(x as u64, kind)
-                        },
-                        Token::FloatLiteral(x) => Token::FloatLiteral(-x),
-                        _ => unreachable!(),
+                let token = match token {
+                    Token::IntegerLiteral(x, kind) => {
+                        let x = format!("-{}", x).parse::<i64>().unwrap();
+                        Token::IntegerLiteral(x as u64, kind)
                     },
-                    location,
-                )
+                    Token::FloatLiteral(x, kind) => Token::FloatLiteral(-x, kind),
+                    _ => unreachable!(),
+                };
+                (token, location)
             })
         } else {
             Some((Token::Subtract, self.locate()))
@@ -323,22 +355,26 @@ impl<'cache, 'contents> Lexer<'cache, 'contents> {
     fn lex_string(&mut self) -> IterElem<'cache> {
         self.advance();
         let mut contents = String::new();
-        while self.current != '"' {
-            let current_char = if self.current == '\\' {
-                self.advance();
-                match self.current {
-                    '\\' | '\'' => self.current,
-                    'n' => '\n',
-                    'r' => '\r',
-                    't' => '\t',
-                    '0' => '\0',
-                    _ => {
-                        let error = LexerError::InvalidEscapeSequence(self.current);
-                        return self.advance2_with(Token::Invalid(error));
-                    },
-                }
-            } else {
-                self.current
+        while !(self.current == '"' || self.at_end_of_input()) {
+            let current_char = match (self.current, self.next) {
+                ('$', '{') => {
+                    return Some((Token::StringLiteral(contents), self.locate()));
+                },
+                ('\\', c) => {
+                    self.advance();
+                    match c {
+                        '\\' | '"' | '$' => c,
+                        'n' => '\n',
+                        'r' => '\r',
+                        't' => '\t',
+                        '0' => '\0',
+                        _ => {
+                            let error = LexerError::InvalidEscapeSequence(self.current);
+                            return self.advance2_with(Token::Invalid(error));
+                        },
+                    }
+                },
+                (c, _) => c,
             };
             contents.push(current_char);
             self.advance();
@@ -486,8 +522,14 @@ impl<'cache, 'contents> Iterator for Lexer<'cache, 'contents> {
 
         self.previous_token_expects_indent = false;
 
+        // Checks if there is the same number of open parenthesis as when interpolation last began
+        let matched_interpolation = match self.pending_interpolations.last() {
+            Some(open_braces) => open_braces == &self.open_braces.curly,
+            None => false,
+        };
+
         match (self.current, self.next) {
-            (c, _) if c.is_digit(10) => self.lex_number(),
+            (c, _) if c.is_ascii_digit() => self.lex_number(),
             (c, _) if c.is_alphanumeric() || c == '_' => self.lex_alphanumeric(),
             ('\0', _) => {
                 if self.current_indent_level != 0 {
@@ -500,10 +542,20 @@ impl<'cache, 'contents> Iterator for Lexer<'cache, 'contents> {
                 }
             },
             ('"', _) => self.lex_string(),
+            ('}', _) if matched_interpolation => {
+                self.current = '"';
+                self.pending_interpolations.pop();
+                Some((Token::InterpolateRight, self.locate()))
+            },
+            ('$', '{') => {
+                self.pending_interpolations.push(self.open_braces.curly);
+                self.advance2_with(Token::InterpolateLeft)
+            },
             ('\'', _) => self.lex_char_literal(),
             ('/', '/') => self.lex_singleline_comment(),
             ('/', '*') => self.lex_multiline_comment(),
             ('=', '=') => self.advance2_with(Token::EqualEqual),
+            ('=', '>') => self.advance2_with(Token::FatArrow),
             ('.', '.') => self.advance2_with(Token::Range),
             (':', '=') => {
                 self.previous_token_expects_indent = true;
@@ -530,11 +582,26 @@ impl<'cache, 'contents> Iterator for Lexer<'cache, 'contents> {
             ('#', _) => self.advance_with(Token::Index),
             ('%', _) => self.advance_with(Token::Modulus),
             ('*', _) => self.advance_with(Token::Multiply),
-            ('(', _) => self.advance_with(Token::ParenthesisLeft),
-            (')', _) => self.advance_with(Token::ParenthesisRight),
+            ('(', _) => {
+                self.open_braces.parenthesis += 1;
+                self.advance_with(Token::ParenthesisLeft)
+            },
+            (')', _) => {
+                // This will overflow if there are mismatched parenthesis,
+                // should we handle this inside the lexer,
+                // or leave that to the parsing stage?
+                self.open_braces.parenthesis -= 1;
+                self.advance_with(Token::ParenthesisRight)
+            },
             ('+', _) => self.advance_with(Token::Add),
-            ('[', _) => self.advance_with(Token::BracketLeft),
-            (']', _) => self.advance_with(Token::BracketRight),
+            ('[', _) => {
+                self.open_braces.square += 1;
+                self.advance_with(Token::BracketLeft)
+            },
+            (']', _) => {
+                self.open_braces.square -= 1;
+                self.advance_with(Token::BracketRight)
+            },
             ('|', _) => self.advance_with(Token::Pipe),
             (':', _) => self.advance_with(Token::Colon),
             (';', _) => self.advance_with(Token::Semicolon),

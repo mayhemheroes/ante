@@ -1,4 +1,4 @@
-use crate::util::fmap;
+use crate::{lexer::token::FloatKind, util::fmap};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum IntegerKind {
@@ -17,7 +17,7 @@ pub enum IntegerKind {
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum PrimitiveType {
     Integer(IntegerKind),
-    Float,
+    Float(FloatKind),
     Char,
     Boolean,
     Unit,
@@ -58,11 +58,11 @@ impl std::fmt::Display for Type {
         match self {
             Type::Primitive(p) => match p {
                 PrimitiveType::Integer(kind) => kind.fmt(f),
-                PrimitiveType::Float => write!(f, "float"),
-                PrimitiveType::Char => write!(f, "char"),
-                PrimitiveType::Boolean => write!(f, "bool"),
-                PrimitiveType::Unit => write!(f, "unit"),
-                PrimitiveType::Pointer => write!(f, "ptr"),
+                PrimitiveType::Float(kind) => kind.fmt(f),
+                PrimitiveType::Char => write!(f, "Char"),
+                PrimitiveType::Boolean => write!(f, "Bool"),
+                PrimitiveType::Unit => write!(f, "Unit"),
+                PrimitiveType::Pointer => write!(f, "Ptr"),
             },
             Type::Function(function) => write!(f, "({})", function),
             Type::Tuple(elems) => {

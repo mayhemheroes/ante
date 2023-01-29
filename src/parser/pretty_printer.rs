@@ -20,7 +20,7 @@ impl<'a> Display for ast::Literal<'a> {
         use ast::LiteralKind::*;
         match &self.kind {
             Integer(x, _) => write!(f, "{}", x),
-            Float(x) => write!(f, "{}", f64::from_bits(*x)),
+            Float(x, _) => write!(f, "{}", f64::from_bits(*x)),
             String(s) => write!(f, "\"{}\"", s),
             Char(c) => write!(f, "'{}'", c),
             Bool(b) => write!(f, "{}", if *b { "true" } else { "false" }),
@@ -71,11 +71,7 @@ impl<'a> Display for ast::Definition<'a> {
 
 impl<'a> Display for ast::If<'a> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        if let Some(ref otherwise) = self.otherwise {
-            write!(f, "(if {} then {} else {})", self.condition, self.then, otherwise)
-        } else {
-            write!(f, "(if {} then {})", self.condition, self.then)
-        }
+        write!(f, "(if {} then {} else {})", self.condition, self.then, self.otherwise)
     }
 }
 
@@ -93,18 +89,22 @@ impl<'a> Display for ast::Type<'a> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         use ast::Type::*;
         match self {
-            Integer(kind, _) => write!(f, "{}", kind),
-            Float(_) => write!(f, "float"),
-            Char(_) => write!(f, "char"),
-            String(_) => write!(f, "string"),
+            Integer(Some(kind), _) => write!(f, "{}", kind),
+            Integer(None, _) => write!(f, "Int"),
+            Float(Some(kind), _) => write!(f, "{}", kind),
+            Float(None, _) => write!(f, "Float"),
+            Char(_) => write!(f, "Char"),
+            String(_) => write!(f, "String"),
             Pointer(_) => write!(f, "Ptr"),
-            Boolean(_) => write!(f, "bool"),
-            Unit(_) => write!(f, "unit"),
-            Reference(_) => write!(f, "ref"),
+            Boolean(_) => write!(f, "Bool"),
+            Unit(_) => write!(f, "Unit"),
+            Reference(_) => write!(f, "Ref"),
             TypeVariable(name, _) => write!(f, "{}", name),
             UserDefined(name, _) => write!(f, "{}", name),
-            Function(params, return_type, varargs, _) => {
-                write!(f, "({} {}-> {})", join_with(params, " "), if *varargs { "... " } else { "" }, return_type)
+            Function(params, return_type, varargs, is_closure, _) => {
+                let arrow = if *is_closure { "=>" } else { "->" };
+                let varargs = if *varargs { "... " } else { "" };
+                write!(f, "({} {}{} {})", join_with(params, " "), varargs, arrow, return_type)
             },
             TypeApplication(constructor, args, _) => {
                 write!(f, "({} {})", constructor, join_with(args, " "))

@@ -469,14 +469,14 @@ impl PatternMatrix {
     /// Handles exhaustiveness checking for the union internally.
     fn switch_on_pattern<'c>(&mut self, cache: &mut ModuleCache<'c>, location: Location<'c>) -> DecisionTreeResult {
         // Generate the set of constructors appearing in the column
-        let mut matched_variants = BTreeMap::new();
+        let mut matched_variants: BTreeMap<_, Vec<_>> = BTreeMap::new();
         let mut switching_on = None;
 
         for (row, _) in self.rows.iter() {
             if let Some((Variant(tag, fields), var)) = row.head() {
                 switching_on = Some(*var);
 
-                matched_variants.entry(tag).or_insert(vec![]).push(fields);
+                matched_variants.entry(tag).or_default().push(fields);
             }
         }
 
@@ -489,7 +489,7 @@ impl PatternMatrix {
                 let arity = fields[0].len();
                 let mut fields = collect_fields(fields);
 
-                let branch = self.specialize(&tag, arity, &mut fields, cache, location).compile(cache, location);
+                let branch = self.specialize(tag, arity, &mut fields, cache, location).compile(cache, location);
 
                 // PatternStacks store patterns in reverse order for faster prepending.
                 // Reversing fields here undoes this so that only the natural order is
@@ -777,8 +777,10 @@ impl DebugConstructor {
         use VariantTag::*;
         let tag = match &tag {
             Some(UserDefined(id)) => cache.definition_infos[id.0].name.clone(),
-            Some(Literal(LiteralKind::Integer(_, kind))) => format!("_ : {}", kind),
-            Some(Literal(LiteralKind::Float(_))) => "_ : float".to_string(),
+            Some(Literal(LiteralKind::Integer(_, Some(kind)))) => format!("_ : {}", kind),
+            Some(Literal(LiteralKind::Integer(_, None))) => format!("_ : Int"),
+            Some(Literal(LiteralKind::Float(_, Some(kind)))) => format!("_ : {}", kind),
+            Some(Literal(LiteralKind::Float(_, None))) => format!("_ : Float"),
             Some(Literal(LiteralKind::String(_))) => "_ : string".to_string(),
             Some(Literal(LiteralKind::Char(_))) => "_ : char".to_string(),
 
@@ -919,8 +921,10 @@ impl Case {
                 let constructor_type = unwrap_clone(&cache.definition_infos[id.0].typ);
                 constructor_type.instantiate(vec![], cache).0
             },
-            Some(Literal(LiteralKind::Integer(_, kind))) => Type::Primitive(PrimitiveType::IntegerType(*kind)),
-            Some(Literal(LiteralKind::Float(_))) => Type::Primitive(PrimitiveType::FloatType),
+            Some(Literal(LiteralKind::Integer(_, Some(kind)))) => Type::int(*kind),
+            Some(Literal(LiteralKind::Integer(_, None))) => Type::polymorphic_int(typechecker::next_type_variable_id(cache)),
+            Some(Literal(LiteralKind::Float(_, Some(kind)))) => Type::float(*kind),
+            Some(Literal(LiteralKind::Float(_, None))) => Type::polymorphic_float(typechecker::next_type_variable_id(cache)),
             Some(Literal(LiteralKind::String(_))) => Type::UserDefined(STRING_TYPE),
             Some(Literal(LiteralKind::Char(_))) => Type::Primitive(PrimitiveType::CharType),
             Some(Literal(LiteralKind::Bool(_))) => unreachable!(),

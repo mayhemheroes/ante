@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::args::Args;
+use crate::cli::{Cli, EmitTarget};
 use crate::hir::{self, Ast, DefinitionId, PrimitiveType, Type};
+use crate::lexer::token::FloatKind;
 use crate::util::fmap;
 
 use cranelift::codegen::ir::{types as cranelift_types, FuncRef, Function, StackSlot};
@@ -139,7 +140,7 @@ impl<'local> Context<'local> {
         )
     }
 
-    pub fn codegen_all(path: &Path, hir: &'local Ast, args: &Args) {
+    pub fn codegen_all(path: &Path, hir: &'local Ast, args: &Cli) {
         let output_path = path.with_extension("o");
         let (mut context, mut builder_context) = Context::new(&output_path, !args.build);
         let mut module_context = context.module.make_context();
@@ -162,7 +163,7 @@ impl<'local> Context<'local> {
     /// compile the actual body of the function?
     fn codegen_function_body(
         &mut self, function: &'local hir::Lambda, context: &mut FunctionBuilderContext,
-        module_context: &mut cranelift::codegen::Context, signature: Signature, function_id: FuncId, args: &Args,
+        module_context: &mut cranelift::codegen::Context, signature: Signature, function_id: FuncId, args: &Cli,
     ) {
         module_context.func = Function::with_name_signature(ExternalName::user(0, function_id.as_u32()), signature);
         let mut builder = FunctionBuilder::new(&mut module_context.func, context);
@@ -177,7 +178,7 @@ impl<'local> Context<'local> {
 
         builder.finalize();
 
-        if args.show_ir {
+        if args.emit == Some(EmitTarget::Ir) {
             let name = match module_context.func.name {
                 ExternalName::User { index, .. } => index,
                 ExternalName::TestCase { .. } => unreachable!(),
@@ -204,7 +205,7 @@ impl<'local> Context<'local> {
 
     fn codegen_main(
         &mut self, ast: &'local Ast, builder_context: &mut FunctionBuilderContext,
-        module_context: &mut cranelift::codegen::Context, args: &Args,
+        module_context: &mut cranelift::codegen::Context, args: &Cli,
     ) -> FuncId {
         let func = &mut module_context.func;
         func.signature.returns.push(AbiParam::new(cranelift_types::I32));
@@ -228,7 +229,7 @@ impl<'local> Context<'local> {
         let func = &module_context.func;
         let res = verify_function(func, &flags);
 
-        if args.show_ir {
+        if args.emit == Some(EmitTarget::Ir) {
             println!("main =\n{}", func.display());
         }
 
@@ -555,7 +556,8 @@ fn function_type() -> cranelift_types::Type {
 fn convert_primitive_type(typ: &PrimitiveType) -> cranelift_types::Type {
     match typ {
         PrimitiveType::Integer(kind) => convert_integer_kind(*kind),
-        PrimitiveType::Float => cranelift_types::F64,
+        PrimitiveType::Float(FloatKind::F32) => cranelift_types::F32,
+        PrimitiveType::Float(FloatKind::F64) => cranelift_types::F64,
         PrimitiveType::Char => cranelift_types::I8,
         PrimitiveType::Boolean => cranelift_types::I8,
         PrimitiveType::Unit => cranelift_types::I8,

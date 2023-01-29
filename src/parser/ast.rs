@@ -26,7 +26,7 @@
 //!   `decision_tree: Option<DecisionTree>` for `ast::Match`s
 use crate::cache::{DefinitionInfoId, EffectInfoId, ImplInfoId, ImplScopeId, ModuleId, TraitInfoId, VariableId};
 use crate::error::location::{Locatable, Location};
-use crate::lexer::token::{IntegerKind, Token};
+use crate::lexer::token::{FloatKind, IntegerKind, Token};
 use crate::types::pattern::DecisionTree;
 use crate::types::traits::RequiredTrait;
 use crate::types::typechecker::TypeBindings;
@@ -36,8 +36,8 @@ use std::rc::Rc;
 
 #[derive(Clone, Debug, Eq, PartialOrd, Ord)]
 pub enum LiteralKind {
-    Integer(u64, IntegerKind),
-    Float(u64),
+    Integer(u64, Option<IntegerKind>),
+    Float(u64, Option<FloatKind>),
     String(String),
     Char(char),
     Bool(bool),
@@ -167,7 +167,7 @@ pub struct Definition<'a> {
 pub struct If<'a> {
     pub condition: Box<Ast<'a>>,
     pub then: Box<Ast<'a>>,
-    pub otherwise: Option<Box<Ast<'a>>>,
+    pub otherwise: Box<Ast<'a>>,
     pub location: Location<'a>,
     pub typ: Option<types::Type>,
 }
@@ -195,15 +195,17 @@ pub struct Match<'a> {
 #[derive(Debug, Clone)]
 #[allow(clippy::enum_variant_names)]
 pub enum Type<'a> {
-    Integer(IntegerKind, Location<'a>),
-    Float(Location<'a>),
+    // Optional IntegerKind, None = polymorphic int
+    Integer(Option<IntegerKind>, Location<'a>),
+    // Optional FloatKind, None = polymorphic float
+    Float(Option<FloatKind>, Location<'a>),
     Char(Location<'a>),
     String(Location<'a>),
     Pointer(Location<'a>),
     Boolean(Location<'a>),
     Unit(Location<'a>),
     Reference(Location<'a>),
-    Function(Vec<Type<'a>>, Box<Type<'a>>, /*varargs:*/ bool, Location<'a>),
+    Function(Vec<Type<'a>>, Box<Type<'a>>, /*varargs:*/ bool, /*closure*/ bool, Location<'a>),
     TypeVariable(String, Location<'a>),
     UserDefined(String, Location<'a>),
     TypeApplication(Box<Type<'a>>, Vec<Type<'a>>, Location<'a>),
@@ -422,7 +424,7 @@ impl PartialEq for LiteralKind {
         use LiteralKind::*;
         match (self, other) {
             (Integer(x, _), Integer(y, _)) => x == y,
-            (Float(x), Float(y)) => x == y,
+            (Float(x, _), Float(y, _)) => x == y,
             (String(x), String(y)) => x == y,
             (Char(x), Char(y)) => x == y,
             (Bool(x), Bool(y)) => x == y,
@@ -437,7 +439,7 @@ impl std::hash::Hash for LiteralKind {
         core::mem::discriminant(self).hash(state);
         match self {
             LiteralKind::Integer(x, _) => x.hash(state),
-            LiteralKind::Float(x) => x.hash(state),
+            LiteralKind::Float(x, _) => x.hash(state),
             LiteralKind::String(x) => x.hash(state),
             LiteralKind::Char(x) => x.hash(state),
             LiteralKind::Bool(x) => x.hash(state),
@@ -467,12 +469,12 @@ impl<'a> Ast<'a> {
         }
     }
 
-    pub fn integer(x: u64, kind: IntegerKind, location: Location<'a>) -> Ast<'a> {
+    pub fn integer(x: u64, kind: Option<IntegerKind>, location: Location<'a>) -> Ast<'a> {
         Ast::Literal(Literal { kind: LiteralKind::Integer(x, kind), location, typ: None })
     }
 
-    pub fn float(x: f64, location: Location<'a>) -> Ast<'a> {
-        Ast::Literal(Literal { kind: LiteralKind::Float(x.to_bits()), location, typ: None })
+    pub fn float(x: f64, kind: Option<FloatKind>, location: Location<'a>) -> Ast<'a> {
+        Ast::Literal(Literal { kind: LiteralKind::Float(x.to_bits(), kind), location, typ: None })
     }
 
     pub fn string(x: String, location: Location<'a>) -> Ast<'a> {
@@ -549,13 +551,17 @@ impl<'a> Ast<'a> {
     }
 
     pub fn if_expr(condition: Ast<'a>, then: Ast<'a>, otherwise: Option<Ast<'a>>, location: Location<'a>) -> Ast<'a> {
-        Ast::If(If {
-            condition: Box::new(condition),
-            then: Box::new(then),
-            otherwise: otherwise.map(Box::new),
-            location,
-            typ: None,
-        })
+        if let Some(otherwise) = otherwise {
+            Ast::If(If {
+                condition: Box::new(condition),
+                then: Box::new(then),
+                otherwise: Box::new(otherwise),
+                location,
+                typ: None,
+            })
+        } else {
+            super::desugar::desugar_if_with_no_else(condition, then, location)
+        }
     }
 
     pub fn definition(pattern: Ast<'a>, expr: Ast<'a>, location: Location<'a>) -> Ast<'a> {
@@ -754,14 +760,14 @@ impl<'a> Locatable<'a> for Type<'a> {
     fn locate(&self) -> Location<'a> {
         match self {
             Type::Integer(_, location) => *location,
-            Type::Float(location) => *location,
+            Type::Float(_, location) => *location,
             Type::Char(location) => *location,
             Type::String(location) => *location,
             Type::Pointer(location) => *location,
             Type::Boolean(location) => *location,
             Type::Unit(location) => *location,
             Type::Reference(location) => *location,
-            Type::Function(_, _, _, location) => *location,
+            Type::Function(_, _, _, _, location) => *location,
             Type::TypeVariable(_, location) => *location,
             Type::UserDefined(_, location) => *location,
             Type::TypeApplication(_, _, location) => *location,
