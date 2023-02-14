@@ -21,6 +21,7 @@ mod util;
 
 #[macro_use]
 mod error;
+mod effects;
 mod cache;
 mod cli;
 
