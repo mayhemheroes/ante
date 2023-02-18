@@ -21,7 +21,7 @@ pub use types::{FunctionType, IntegerKind, PrimitiveType, Type};
 use std::rc::Rc;
 
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub struct DefinitionId(usize);
+pub struct DefinitionId(pub usize);
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Literal {

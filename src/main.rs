@@ -155,6 +155,8 @@ fn compile(args: Cli) {
     let hir = hir::monomorphise(ast, cache);
     if args.emit == Some(EmitTarget::Hir) {
         println!("{}", hir);
+
+        println!("\n\ncps:\n\n{}", effects::convert_to_cps(hir.clone()));
         return;
     }
 
