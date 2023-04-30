@@ -135,8 +135,7 @@ impl CodeGen for hir::If {
 
         let then = builder.create_block();
         let if_false = builder.create_block();
-        builder.ins().brnz(cond, then, &[]);
-        builder.ins().jump(if_false, &[]);
+        builder.ins().brif(cond, then, &[], if_false, &[]);
 
         let then_values = context.eval_all_in_block(&self.then, then, builder);
 

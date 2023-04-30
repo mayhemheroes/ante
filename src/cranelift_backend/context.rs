@@ -6,12 +6,14 @@ use crate::hir::{self, Ast, DefinitionId, PrimitiveType, Type};
 use crate::lexer::token::FloatKind;
 use crate::util::fmap;
 
-use cranelift::codegen::ir::{types as cranelift_types, FuncRef, Function, StackSlot};
+use cranelift::codegen::ir::{
+    types as cranelift_types, FuncRef, Function, StackSlot, UserExternalName, UserExternalNameRef, UserFuncName,
+};
 use cranelift::codegen::verify_function;
 use cranelift::frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift::prelude::isa::CallConv;
 use cranelift::prelude::{
-    settings, AbiParam, Block, ExtFuncData, ExternalName, InstBuilder, MemFlags, Signature, StackSlotData,
+    settings, AbiParam, Block, EntityRef, ExtFuncData, ExternalName, InstBuilder, MemFlags, Signature, StackSlotData,
     StackSlotKind, Value as CraneliftValue,
 };
 use cranelift_module::{DataContext, DataId, FuncId, Linkage, Module};
@@ -168,7 +170,8 @@ impl<'local> Context<'local> {
         &mut self, function: &'local hir::Lambda, context: &mut FunctionBuilderContext,
         module_context: &mut cranelift::codegen::Context, signature: Signature, function_id: FuncId, args: &Cli,
     ) {
-        module_context.func = Function::with_name_signature(ExternalName::user(0, function_id.as_u32()), signature);
+        let name = UserFuncName::User(UserExternalName::new(0, function_id.as_u32()));
+        module_context.func = Function::with_name_signature(name, signature);
         let mut builder = FunctionBuilder::new(&mut module_context.func, context);
 
         let entry = builder.create_block();
@@ -183,9 +186,8 @@ impl<'local> Context<'local> {
 
         if args.emit == Some(EmitTarget::Ir) {
             let name = match module_context.func.name {
-                ExternalName::User { index, .. } => index,
-                ExternalName::TestCase { .. } => unreachable!(),
-                ExternalName::LibCall(_) => unreachable!(),
+                UserFuncName::User(name) => name.index,
+                UserFuncName::Testcase(_) => unreachable!(),
             };
 
             let func = &self.module.declarations().get_function_decl(FuncId::from_u32(name));
@@ -368,7 +370,7 @@ impl<'local> Context<'local> {
         self.function_queue.push((function, signature.clone(), function_id));
 
         Value::Function(FuncData {
-            name: ExternalName::user(0, function_id.as_u32()),
+            name: ExternalName::User(UserExternalNameRef::new(function_id.as_u32() as usize)),
             signature,
             // Using 'true' here gives an unimplemented error on aarch64
             colocated: false,
@@ -385,7 +387,11 @@ impl<'local> Context<'local> {
             FunctionOrGlobal::Function(signature) => {
                 // Don't mangle extern names
                 let id = self.module.declare_function(name, Linkage::Import, &signature).unwrap();
-                Value::Function(FuncData { name: ExternalName::user(0, id.as_u32()), signature, colocated: false })
+                Value::Function(FuncData {
+                    name: ExternalName::User(UserExternalNameRef::new(id.as_u32() as usize)),
+                    signature,
+                    colocated: false,
+                })
             },
         }
     }
@@ -450,7 +456,7 @@ impl<'local> Context<'local> {
         });
 
         if start_type != target {
-            Value::Normal(builder.ins().bitcast(target, value))
+            Value::Normal(builder.ins().bitcast(target, MemFlags::new(), value))
         } else {
             Value::Normal(value)
         }
@@ -459,7 +465,7 @@ impl<'local> Context<'local> {
     fn transmute_multiple_values(&mut self, value: Value, target_type: &Type, builder: &mut FunctionBuilder) -> Value {
         let size = size_of(target_type);
         let data = StackSlotData::new(StackSlotKind::ExplicitSlot, size);
-        let slot = builder.create_stack_slot(data);
+        let slot = builder.create_sized_stack_slot(data);
 
         self.store_stack_value(value, slot, &mut 0, builder);
         self.load_stack_value(target_type, slot, &mut 0, builder)

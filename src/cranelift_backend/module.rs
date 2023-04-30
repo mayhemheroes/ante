@@ -45,8 +45,7 @@ impl DynModule {
             DynModule::Jit(module) => {
                 module.finalize_definitions();
             },
-            DynModule::Static(_module) => {
-            },
+            DynModule::Static(_module) => {},
         }
     }
 
@@ -117,15 +116,16 @@ impl Module for DynModule {
         dispatch_on_module!(self, Module::define_function, func, ctx)
     }
 
-    fn define_function_bytes(
-        &mut self, func: FuncId, bytes: &[u8], relocs: &[cranelift::codegen::MachReloc],
-    ) -> cranelift_module::ModuleResult<cranelift_module::ModuleCompiledFunction> {
-        dispatch_on_module!(self, Module::define_function_bytes, func, bytes, relocs)
-    }
-
     fn define_data(
         &mut self, data: cranelift_module::DataId, data_ctx: &DataContext,
     ) -> cranelift_module::ModuleResult<()> {
         dispatch_on_module!(self, Module::define_data, data, data_ctx)
+    }
+
+    fn define_function_bytes(
+        &mut self, func_id: FuncId, func: &cranelift::codegen::ir::Function, alignment: u64, bytes: &[u8],
+        relocs: &[cranelift::codegen::MachReloc],
+    ) -> cranelift_module::ModuleResult<cranelift_module::ModuleCompiledFunction> {
+        dispatch_on_module!(self, Module::define_function_bytes, func_id, func, alignment, bytes, relocs)
     }
 }

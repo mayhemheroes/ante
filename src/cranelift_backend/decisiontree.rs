@@ -59,7 +59,7 @@ impl<'ast> Context<'ast> {
         let else_block = builder.create_block();
         let jump_table_data = create_jump_table_data(&mut cases, else_block);
         let jump_table = builder.create_jump_table(jump_table_data);
-        builder.ins().br_table(int_to_switch_on, else_block, jump_table);
+        builder.ins().br_table(int_to_switch_on, jump_table);
 
         // Fill in new blocks only after creating the jump table.
         // Cranelift enforces we cannot switch out of partially filled blocks.

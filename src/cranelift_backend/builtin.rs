@@ -1,6 +1,8 @@
 use cranelift::frontend::FunctionBuilder;
 use cranelift::prelude::types::I8;
-use cranelift::prelude::{FloatCC, InstBuilder, IntCC, StackSlotData, StackSlotKind, Value as CraneliftValue};
+use cranelift::prelude::{
+    FloatCC, InstBuilder, IntCC, MemFlags, StackSlotData, StackSlotKind, Value as CraneliftValue,
+};
 
 use crate::hir::{Ast, Builtin};
 
@@ -109,7 +111,7 @@ fn mod_unsigned(param1: CraneliftValue, param2: CraneliftValue, builder: &mut Fu
 
 fn b1_to_i8(value: CraneliftValue, builder: &mut FunctionBuilder) -> CraneliftValue {
     // Does this cast preserve the round-trip?
-    builder.ins().raw_bitcast(I8, value)
+    builder.ins().bitcast(I8, MemFlags::new(), value)
 }
 
 fn less_signed(param1: CraneliftValue, param2: CraneliftValue, builder: &mut FunctionBuilder) -> CraneliftValue {
@@ -140,7 +142,9 @@ fn eq_bool(param1: CraneliftValue, param2: CraneliftValue, builder: &mut Functio
     b1_to_i8(builder.ins().icmp(IntCC::Equal, param1, param2), builder)
 }
 
-fn transmute<'a>(context: &mut Context<'a>, param: &'a Ast, typ: &crate::hir::Type, builder: &mut FunctionBuilder) -> Value {
+fn transmute<'a>(
+    context: &mut Context<'a>, param: &'a Ast, typ: &crate::hir::Type, builder: &mut FunctionBuilder,
+) -> Value {
     let value = param.codegen(context, builder);
     context.transmute(value, typ, builder)
 }
@@ -155,9 +159,9 @@ fn offset(
     let offset = builder.ins().imul(offset, size);
 
     if usize_type != pointer_type {
-        let address = builder.ins().bitcast(usize_type, address);
+        let address = builder.ins().bitcast(usize_type, MemFlags::new(), address);
         let new_address = builder.ins().iadd(address, offset);
-        builder.ins().bitcast(pointer_type, new_address)
+        builder.ins().bitcast(pointer_type, MemFlags::new(), new_address)
     } else {
         builder.ins().iadd(address, offset)
     }
@@ -258,7 +262,7 @@ fn stack_alloc<'a>(param1: &'a Ast, context: &mut Context<'a>, builder: &mut Fun
     let size = values.iter().map(|value| builder.func.dfg.value_type(*value).bytes()).sum();
 
     let data = StackSlotData::new(StackSlotKind::ExplicitSlot, size);
-    let slot = builder.create_stack_slot(data);
+    let slot = builder.create_sized_stack_slot(data);
 
     let mut offset: u32 = 0;
     for value in values {
