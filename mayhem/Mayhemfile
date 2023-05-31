@@ -1,0 +1,5 @@
+project: ante
+target: fuzz_start_time
+
+cmds:
+  - cmd: /fuzz_start_time
